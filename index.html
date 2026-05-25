@@ -1,0 +1,2310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RWS Comment Extractor</title>
+
+<!-- Libraries from CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  /* =====================================================================
+     Design tokens — beige + white, premium
+     ===================================================================== */
+  :root {
+    --bg: #F4EDDC;          /* warm beige page background */
+    --bg-elev: #FFFFFF;     /* white cards */
+    --bg-soft: #FAF6EC;     /* softer beige (hover surfaces) */
+    --bg-deep: #131313;
+    --bg-grid: #ECE2CB;     /* deeper beige for divider tints / pressed states */
+
+    --ink: #0f0f10;
+    --ink-1: #2a2a2d;
+    --ink-2: #5a5a60;
+    --ink-3: #8c8c93;
+    --ink-4: #b8b8be;
+
+    --line:   #DFD3B6;      /* warm beige line, coordinates with bg */
+    --line-2: #ECE3CC;      /* lighter beige line */
+    --line-deep: #2a2a2d;
+
+    --accent: #2a4d3e;
+    --accent-2: #d4a574;
+    --accent-3: #b54a25;
+    --lilly-red: #E1241B;
+    --danger: #b52525;
+    --danger-soft: #fbeaea;
+    --good: #2a4d3e;
+    --warn: #8a6c1c;
+
+    --serif: 'Instrument Serif', 'Cormorant Garamond', Georgia, serif;
+    --sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --mono: 'SF Mono', Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+
+    /* slightly heavier shadows so white cards lift cleanly off the beige */
+    --shadow-1: 0 1px 0 rgba(60,40,12,.04), 0 1px 2px rgba(60,40,12,.03);
+    --shadow-2: 0 1px 3px rgba(60,40,12,.05), 0 10px 28px -14px rgba(60,40,12,.14);
+    --shadow-3: 0 2px 6px rgba(60,40,12,.06), 0 28px 72px -18px rgba(60,40,12,.22);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--ink);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    /* Two very soft radial washes — one warm tan, one slightly warmer
+       deeper note — give the beige body subtle depth without busy texture. */
+    background-image:
+      radial-gradient(circle at 8% 4%,  rgba(225,180,120,0.10), transparent 45%),
+      radial-gradient(circle at 92% 96%, rgba(180,130,80,0.06),  transparent 50%);
+    background-attachment: fixed;
+  }
+
+  .topbar {
+    border-bottom: 1px solid var(--line);
+    background: rgba(255,255,255,0.78);
+    backdrop-filter: blur(14px);
+    position: sticky; top: 0; z-index: 50;
+    /* thin Lilly-red accent under topbar — same accent as Excel cover */
+    box-shadow: 0 1px 0 rgba(225, 36, 27, 0.10);
+  }
+  .topbar-inner {
+    max-width: 1240px; margin: 0 auto;
+    padding: 16px 32px;
+    display: flex; align-items: center; justify-content: space-between; gap: 24px;
+  }
+  .brand { display: flex; align-items: center; gap: 16px; }
+  .brand-logo {
+    display: inline-flex; align-items: center; height: 38px;
+  }
+  .brand-logo svg {
+    height: 100%; width: auto; display: block;
+  }
+  .brand-divider {
+    width: 1px; height: 26px; background: var(--line);
+  }
+  .brand-name {
+    font-family: var(--serif); font-style: italic;
+    font-size: 28px; font-weight: 400;
+    letter-spacing: -0.005em; color: #E1241B;
+    line-height: 1;
+  }
+
+  .page { max-width: 1240px; margin: 0 auto; padding: 56px 32px 96px; }
+
+  .intro { margin-bottom: 44px; max-width: 760px; }
+  .intro-eyebrow {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.24em;
+    color: var(--ink-3); margin: 0 0 14px; font-weight: 500;
+  }
+  .intro-line {
+    font-family: var(--serif); font-size: 30px; font-weight: 400;
+    font-style: italic; letter-spacing: -0.01em; line-height: 1.22;
+    color: var(--ink-1); margin: 0; max-width: 760px;
+  }
+  .intro::after {
+    content: ""; display: block; margin-top: 22px;
+    width: 56px; height: 2px; background: var(--lilly-red);
+    border-radius: 2px;
+  }
+
+  .steps { display: grid; grid-template-columns: minmax(0, 1fr); gap: 32px; }
+  .step {
+    background: var(--bg-elev); border: 1px solid var(--line);
+    border-radius: 8px; overflow: hidden; box-shadow: var(--shadow-2);
+    transition: box-shadow .25s ease, border-color .25s ease, transform .25s ease;
+  }
+  .step:hover { box-shadow: var(--shadow-3); }
+  .step.has-input { border-color: var(--accent); box-shadow: var(--shadow-3); }
+  .step-head {
+    display: grid; grid-template-columns: 64px 1fr auto;
+    align-items: center; border-bottom: 1px solid var(--line-2);
+  }
+  .step-num {
+    font-family: var(--serif); font-size: 28px; font-style: italic;
+    color: var(--ink-3); text-align: center; padding: 18px 0;
+    border-right: 1px solid var(--line-2);
+  }
+  .step.has-input .step-num { color: var(--accent); }
+  .step-text { padding: 16px 24px; }
+  .step-title { font-size: 15px; font-weight: 500; color: var(--ink); margin: 0; letter-spacing: -0.005em; }
+  .step-hint { font-size: 12.5px; color: var(--ink-2); margin: 2px 0 0; }
+  .step-meta { padding: 16px 24px; color: var(--ink-3); font-size: 12px; font-family: var(--mono); }
+  .step-body { padding: 28px; }
+
+  .dropzone {
+    position: relative; border: 1.5px dashed var(--line); border-radius: 6px;
+    padding: 40px 24px; text-align: center; background: var(--bg-soft);
+    cursor: pointer; transition: all .2s ease;
+  }
+  .dropzone:hover, .dropzone.over {
+    border-color: var(--accent); background: #F0EBDA;
+  }
+  .dropzone.has-file {
+    border-style: solid; border-color: var(--accent); background: #F0EBDA;
+  }
+  .dropzone input[type=file] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+  .dz-icon { font-family: var(--serif); font-size: 32px; color: var(--ink-3); line-height: 1; margin-bottom: 8px; }
+  .dropzone.has-file .dz-icon { color: var(--accent); }
+  .dz-title { font-size: 14px; font-weight: 500; color: var(--ink-1); margin: 0 0 2px; }
+  .dz-sub { font-size: 12px; color: var(--ink-3); margin: 0; }
+  .dz-file {
+    margin-top: 12px; font-family: var(--mono); font-size: 12px;
+    color: var(--accent); word-break: break-all; background: var(--bg-elev);
+    padding: 8px 12px; border-radius: 3px; display: inline-block;
+    border: 1px solid var(--line-2);
+  }
+
+  .round-row { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+  .round-label { font-size: 12px; color: var(--ink-2); text-transform: uppercase; letter-spacing: 0.12em; }
+  .round-pills {
+    display: inline-flex; border: 1px solid var(--line); border-radius: 100px;
+    overflow: hidden; background: var(--bg-elev);
+  }
+  .round-pill {
+    padding: 9px 16px; font-size: 13px; font-weight: 500; color: var(--ink-2);
+    cursor: pointer; border-right: 1px solid var(--line-2);
+    transition: all .14s ease; user-select: none;
+  }
+  .round-pill:last-child { border-right: 0; }
+  .round-pill:hover { background: var(--bg-grid); }
+  .round-pill.active { background: var(--bg-deep); color: #ffffff; }
+  .round-note { font-size: 12px; color: var(--ink-3); flex: 1; min-width: 260px; }
+
+  .actions { display: flex; align-items: center; gap: 12px; margin-top: 28px; flex-wrap: wrap; }
+  .btn {
+    appearance: none; border: 1px solid var(--ink); background: var(--ink);
+    color: #ffffff; font: inherit; font-size: 14px; font-weight: 500;
+    padding: 12px 24px; border-radius: 3px; cursor: pointer;
+    transition: all .15s ease; letter-spacing: -0.005em;
+    display: inline-flex; align-items: center; gap: 8px;
+  }
+  .btn:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
+  .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); }
+  .btn.primary:hover:not(:disabled) { background: var(--ink); border-color: var(--ink); }
+  .btn.ghost { background: transparent; color: var(--ink-1); border-color: var(--line); }
+  .btn.ghost:hover:not(:disabled) { background: var(--ink); color: #ffffff; border-color: var(--ink); }
+  .btn-suffix { font-size: 11px; color: var(--ink-3); margin-left: 2px; }
+
+  .opt-row {
+    display: flex; align-items: center; gap: 22px; flex-wrap: wrap;
+    font-size: 13px; color: var(--ink-2); margin-top: 4px;
+  }
+  .opt-row label { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+  .opt-row label.disabled {
+    opacity: 0.45; cursor: not-allowed; pointer-events: none;
+  }
+  .opt-row input[type=checkbox] { accent-color: var(--accent); width: 14px; height: 14px; }
+  .opt-row input[type=checkbox]:disabled { cursor: not-allowed; }
+
+  .progress {
+    background: var(--bg-elev); border: 1px solid var(--line); border-radius: 6px;
+    padding: 22px 28px; margin-top: 32px; box-shadow: var(--shadow-2); display: none;
+  }
+  .progress.active { display: block; }
+  .progress-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px; gap: 16px; }
+  .progress-title { font-size: 14px; font-weight: 500; color: var(--ink); display: flex; align-items: center; gap: 10px; }
+  .progress-count { font-family: var(--mono); font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .progress-bar { height: 4px; background: var(--line-2); border-radius: 100px; overflow: hidden; }
+  .progress-fill { height: 100%; background: var(--accent); width: 0%; transition: width .25s ease; border-radius: 100px; }
+  .progress-msg { font-family: var(--mono); font-size: 12px; color: var(--ink-3); margin-top: 12px; word-break: break-all; }
+  .spinner {
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid var(--line); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 0.7s linear infinite; flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .log {
+    margin-top: 20px; background: var(--bg-elev); border: 1px solid var(--line);
+    border-radius: 6px; max-height: 260px; overflow-y: auto;
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
+    display: none; box-shadow: var(--shadow-1);
+  }
+  .log.active { display: block; }
+  .log-row { padding: 6px 18px; border-bottom: 1px solid var(--line-2); display: flex; gap: 12px; }
+  .log-row:last-child { border-bottom: none; }
+  .log-tag {
+    flex-shrink: 0; font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.1em;
+    padding: 2px 7px; border-radius: 2px; height: fit-content; font-weight: 600;
+  }
+  .log-tag.info { background: var(--line-2); color: var(--ink-2); }
+  .log-tag.ok   { background: #e3eee7; color: var(--good); }
+  .log-tag.warn { background: #f5ead0; color: var(--warn); }
+  .log-tag.err  { background: var(--danger-soft); color: var(--danger); }
+  .log-tag.flag { background: #f9e1d6; color: var(--accent-3); }
+  .log-text { color: var(--ink-1); word-break: break-word; }
+
+  .result {
+    background: var(--bg-elev); border: 1px solid var(--line); border-radius: 6px;
+    padding: 36px; margin-top: 36px; box-shadow: var(--shadow-3);
+    display: none; position: relative; overflow: hidden;
+  }
+  .result.active { display: block; }
+  .result::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0;
+    height: 3px; background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  }
+  .result-eyebrow {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.18em;
+    color: var(--accent); margin-bottom: 14px; font-weight: 500;
+  }
+  .result-title {
+    font-family: var(--serif); font-size: 36px; font-weight: 400;
+    letter-spacing: -0.02em; margin: 0 0 8px; color: var(--ink);
+  }
+  .result-title em { font-style: italic; color: var(--accent); }
+  .result-sub { font-size: 13.5px; color: var(--ink-2); margin: 0 0 32px; font-family: var(--mono); }
+  .stats {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0; border: 1px solid var(--line); border-radius: 4px;
+    overflow: hidden; margin-bottom: 32px;
+  }
+  .stat {
+    padding: 20px 22px; background: var(--bg-elev);
+    border-right: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  }
+  .stat:last-child { border-right: 0; }
+  .stat-num {
+    font-family: var(--serif); font-size: 32px; font-weight: 400;
+    color: var(--ink); line-height: 1;
+    font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+  }
+  .stat-num.flag { color: var(--danger); }
+  .stat-label {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.14em;
+    color: var(--ink-3); margin-top: 8px; font-weight: 500;
+  }
+
+  .rounds-display { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 28px; }
+  .round-badge {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 6px 14px; background: var(--bg-grid); border-radius: 100px;
+    font-size: 12px; color: var(--ink-1); border: 1px solid var(--line-2);
+  }
+  .round-badge b { font-weight: 600; }
+  .round-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  .round-badge.r2 .dot { background: var(--accent-2); }
+  .round-badge.r3 .dot { background: var(--accent-3); }
+
+  .help { margin-top: 80px; padding-top: 36px; border-top: 1px solid var(--line); }
+  .help-title { font-family: var(--serif); font-size: 22px; font-weight: 400; letter-spacing: -0.015em; color: var(--ink-1); margin: 0 0 18px; }
+  .help-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 28px 36px; }
+  @media (max-width: 720px) { .help-grid { grid-template-columns: 1fr; } }
+  .help-block h4 { font-size: 12px; font-weight: 600; color: var(--ink); margin: 0 0 8px; text-transform: uppercase; letter-spacing: 0.08em; }
+  .help-block p, .help-block li { font-size: 13px; color: var(--ink-2); margin: 0 0 6px; }
+  .help-block ul { margin: 0; padding-left: 16px; }
+  .help-block code { font-family: var(--mono); font-size: 11.5px; background: var(--bg-grid); padding: 1px 5px; border-radius: 2px; color: var(--ink-1); }
+  .privacy {
+    margin-top: 28px; padding: 14px 18px; background: var(--bg-grid);
+    border-left: 2px solid var(--accent); font-size: 12.5px;
+    color: var(--ink-2); border-radius: 0 3px 3px 0;
+  }
+  .privacy b { color: var(--ink); font-weight: 600; }
+  footer {
+    margin-top: 80px; padding-top: 28px; border-top: 1px solid var(--line);
+    color: var(--ink-3); font-size: 11.5px; font-family: var(--mono);
+    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-logo" aria-label="Lilly">
+        <!-- Lilly script logo (red) -->
+        <svg viewBox="0 0 660 265" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <path d="M121.69 221C141.57 221 160.38 216.39 177.46 206.92 188.18 213.94 201.99 221 222.57 221 243.15 221 262.33 210.99 275.77 202.13 275.99 207.05 277.61 211.3 280.66 214.45 284.83 218.74 291.31 221 299.47 221 313.66 221 331.48 215.5 352.45 203.7 358.16 214.87 370.64 221 386.11 221 402.72 221 422.61 215.92 443.34 205.63 448.31 215.41 459.1 221 471.9 221 488.34 221 505.14 215.26 526.03 202.53 525.91 203.54 525.84 204.42 525.84 205.3 525.84 209.37 526.94 212.79 529.09 215.42 532.1 219.07 537.1 221.01 543.52 221.01 547.76 221.01 553.04 220.31 558.09 218.4 544.7 232.08 532.08 248.05 522.34 263.01L547.89 263.01C574.86 224.83 616.42 187.86 632.43 171.91L616.74 159.71C596.83 179.38 570.29 201.66 553.42 201.66 550.67 201.66 549.49 200.49 549.42 198.74 549.2 193.35 556.29 183.99 563.31 175.48L546.88 162.7C524 184.59 494.64 202.39 477.96 202.39 470.49 202.39 465.69 199.36 463.19 194.55 519.17 158.71 542.41 124.46 542.41 104.43 542.41 95.59 536.38 89.96 526.16 89.96 509.59 89.96 490.42 101.79 473.31 119.98 456.28 138.13 442.84 163.62 440.39 187.35 419.27 198.41 401.51 202.44 392.42 202.44 380.77 202.44 373.92 199.35 370.95 192.94L370.95 192.91C428.52 155.24 468.11 106 468.11 83.04 468.11 73.68 461.97 68.36 451.26 68.36 413.34 68.36 350.86 138.42 348.81 184.22L348.81 184.36C330.28 195.78 314.55 202.38 304.33 202.38 300.99 202.38 297.1 201.47 297.1 196.86 297.1 190.79 305.34 179.96 314.26 169.71L315 168.84 299.23 156.52 298.52 157.21C278.31 177.92 252.45 202.35 225.77 202.35 215.03 202.35 206.04 199.18 196.43 193.99 212.27 181.15 228.11 163.35 247.39 136.51 296.94 126.79 332.41 97.45 352.04 77.73 364.51 65.21 383.67 41.22 383.67 18.92 383.67 8.08 376.71-0.02 363.39-0.02 318.38-0.02 266.07 73.2 231.93 120.34 225.38 121.24 218.71 121.88 212.1 121.88 173.42 121.88 155.2 105.6 155.2 89.37 155.2 64.69 190.71 39.44 233.35 34.49 230.71 28.56 228.17 23.58 225.31 17.11 182.16 21.57 132.82 51.89 132.82 90.99 132.82 100.87 136.09 110.06 143 117.91 155.8 132.4 179.24 140.69 207.33 140.69 210.42 140.69 213.58 140.6 216.8 140.41 202.13 159.07 189.71 172.28 177.86 181.72 165.38 172.68 145.48 163.98 124.84 163.98 100.57 163.98 82.42 175.77 82.42 193.18 82.42 214.73 106.66 220.99 121.69 220.99ZM461.38 175.36C470.2 145.93 506.67 109.61 518.03 109.61 519.16 109.61 519.75 110.47 519.75 111.72 519.75 112.61 519.43 113.72 519.3 114.1 515.56 126.13 496.64 147.85 471.89 167.66 468.67 170.2 465.23 172.85 462.04 175.13L461.39 175.47 461.39 175.36ZM443.48 87.96C444.78 87.96 445.34 88.88 445.4 89.91 445.42 90.38 445.29 90.89 445.18 91.39 441.32 106.97 405.09 144.9 370.63 170.95 382.06 134.59 432.58 87.96 443.48 87.96ZM315.04 51.48C334.15 32.34 348.34 22.4 355.82 22.4 357.77 22.4 359.31 23.7 359.31 25.86 359.31 35.27 346.37 54.28 330.21 70.3 312.73 87.62 289.28 104.19 264.58 112.11 282.84 86.77 300.17 66.4 315.04 51.48ZM123.23 182.02C135.81 182.02 149.88 187.54 158.99 193.86 147.82 199.37 136.15 202.85 123.31 202.85 112.72 202.85 103.24 199.81 103.24 192.88 103.24 186.82 111.04 182.03 123.23 182.03ZM327.18 125.96C334.63 125.96 340.64 132.01 340.64 139.45 340.64 146.89 334.63 152.94 327.18 152.94 319.73 152.94 313.68 146.9 313.68 139.45 313.68 132 319.71 125.96 327.18 125.96Z" fill="#E1241B"/>
+        </svg>
+      </span>
+      <span class="brand-divider" aria-hidden="true"></span>
+      <span class="brand-name">eCOA-RWS Comment Extractor</span>
+    </div>
+  </div>
+</header>
+
+<div class="page">
+
+  <section class="intro">
+    <p class="intro-eyebrow">Clinical translation review workflow</p>
+    <p class="intro-line">Drop a round's zip file with RWS comments. Get one Excel — one tab per language, all scales together, late comments flagged.</p>
+  </section>
+
+  <div class="steps">
+
+    <div class="step" id="step2">
+      <div class="step-head">
+        <div class="step-num">I</div>
+        <div class="step-text">
+          <p class="step-title">Latest RWS comments received (zip)</p>
+          <p class="step-hint">The folder of language-grouped PDFs you received from RWS for this round.</p>
+        </div>
+        <div class="step-meta">.zip</div>
+      </div>
+      <div class="step-body">
+        <div class="dropzone" id="dropZip">
+          <input type="file" id="fileZip" accept=".zip">
+          <div class="dz-icon">⤓</div>
+          <p class="dz-title">Drop the RWS zip here</p>
+          <p class="dz-sub">.zip containing language folders</p>
+          <div class="dz-file" id="zipFile" style="display:none;"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="step" id="stepHop">
+      <div class="step-head">
+        <div class="step-num">II</div>
+        <div class="step-text">
+          <p class="step-title">Previously submitted screens from eCOA (zip)</p>
+          <p class="step-hint">The screens from eCOA team sent to RWS for this round.</p>
+        </div>
+        <div class="step-meta" id="hopMeta">Recommended</div>
+      </div>
+      <div class="step-body">
+        <div class="dropzone" id="dropHop">
+          <input type="file" id="fileHop" accept=".zip">
+          <div class="dz-icon">⤓</div>
+          <p class="dz-title">Drop the screens zip here</p>
+          <p class="dz-sub">.zip of screens/scales sent to RWS</p>
+          <div class="dz-file" id="hopFile" style="display:none;"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="step" id="step1">
+      <div class="step-head">
+        <div class="step-num">III</div>
+        <div class="step-text">
+          <p class="step-title">Continuing an earlier round? <span style="font-weight:400;color:var(--ink-3);">— for Rounds 2 through 5</span></p>
+          <p class="step-hint">Drop the Excel file from your previous round here, so this round's comments can be merged into it.</p>
+        </div>
+        <div class="step-meta" id="step1Meta">Skip&nbsp;for&nbsp;Round&nbsp;1</div>
+      </div>
+      <div class="step-body">
+        <div class="dropzone" id="dropPrior">
+          <input type="file" id="filePrior" accept=".xlsx">
+          <div class="dz-icon">⌁</div>
+          <p class="dz-title">Drop the previous workbook here</p>
+          <p class="dz-sub">.xlsx · skip this if it's your first round</p>
+          <div class="dz-file" id="priorFile" style="display:none;"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="step" id="step3">
+      <div class="step-head">
+        <div class="step-num">IV</div>
+        <div class="step-text">
+          <p class="step-title">Confirm the round and run</p>
+          <p class="step-hint">The tool auto-detects the next round when you add a previous workbook in Step III.</p>
+        </div>
+        <div class="step-meta" id="step3Meta">Ready</div>
+      </div>
+      <div class="step-body">
+        <div class="round-row">
+          <span class="round-label">This is:</span>
+          <div class="round-pills" id="roundPills">
+            <div class="round-pill active" data-round="1">Round 1</div>
+            <div class="round-pill" data-round="2">Round 2</div>
+            <div class="round-pill" data-round="3">Round 3</div>
+            <div class="round-pill" data-round="4">Round 4</div>
+            <div class="round-pill" data-round="5">Round 5</div>
+          </div>
+          <p class="round-note" id="roundNote">
+            New workbook — this will be Round 1.
+          </p>
+        </div>
+
+        <div class="opt-row" style="margin-top:18px;">
+          <label title="Crop and embed a screenshot for every comment (slower)">
+            <input type="checkbox" id="optScreens" checked>
+            Embed screenshots
+          </label>
+          <label title="Flag comments raised later that should have been identified in round 1">
+            <input type="checkbox" id="optFlagLate" checked>
+            Flag issues missed in earlier rounds
+          </label>
+        </div>
+
+        <div class="actions">
+          <button class="btn primary" id="btnRun" disabled>
+            Extract &amp; build workbook
+            <span class="btn-suffix" id="btnRunSuffix"></span>
+          </button>
+          <button class="btn ghost" id="btnReset">Reset</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="progress" id="progressBox">
+    <div class="progress-head">
+      <span class="progress-title" id="progressTitle"><span class="spinner"></span>Working…</span>
+      <span class="progress-count" id="progressCount">0 / 0</span>
+    </div>
+    <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+    <div class="progress-msg" id="progressMsg"></div>
+  </div>
+
+  <div class="log" id="log"></div>
+
+  <div class="result" id="result">
+    <div class="result-eyebrow">Workbook ready</div>
+    <h2 class="result-title" id="resultTitle">All done.</h2>
+    <p class="result-sub" id="resultSub"></p>
+    <div class="rounds-display" id="roundsDisplay"></div>
+    <div class="stats" id="stats"></div>
+    <div class="actions" style="margin-top:0;">
+      <button class="btn primary" id="btnDownload">Download workbook</button>
+      <button class="btn ghost" id="btnAnother">Process another round</button>
+    </div>
+  </div>
+
+  <div class="help">
+    <h3 class="help-title">How it works</h3>
+    <div class="help-grid">
+      <div class="help-block">
+        <h4>The workbook structure</h4>
+        <ul>
+          <li><b>Cover</b> — rounds processed, dates, totals</li>
+          <li><b>Summary</b> — per-PDF comment counts per round</li>
+          <li><b>One tab per language</b> — e.g. <code>CZ</code>, <code>deDE</code>, <code>nlBE</code>, with autoFilter</li>
+          <li><b>__data</b> — tool-managed; do not delete (round history)</li>
+        </ul>
+      </div>
+      <div class="help-block">
+        <h4>How rounds are matched</h4>
+        <p>
+          When you upload a workbook from a previous round, each new comment
+          is matched to a prior one using <b>both location and text similarity</b>.
+          Matched: appended to the existing thread. Unmatched and not a reply
+          to a prior comment: flagged <span style="color:var(--danger);font-weight:600;">in red</span>
+          as a late comment.
+        </p>
+      </div>
+      <div class="help-block">
+        <h4>Filtering scales</h4>
+        <p>
+          Each language tab has a <b>Scale</b> column. Click the filter arrow
+          on the header row in Excel to show only CSSRS Baseline, only qb-PRO,
+          etc. Sort by any column the same way.
+        </p>
+      </div>
+      <div class="help-block">
+        <h4>Adding more rounds later</h4>
+        <p>
+          When Round 2 arrives: open this tool, drop the new Round 2 RWS zip
+          into Step I, optionally drop this round&#39;s screens zip into Step II,
+          drop your Round 1 workbook into Step III, click Run. The tool
+          merges everything into a single updated workbook.
+        </p>
+      </div>
+    </div>
+
+    <div class="privacy">
+      <b>Privacy.</b> Files never leave your computer. All PDF parsing, image
+      cropping, and Excel building happens inside this browser tab.
+    </div>
+  </div>
+
+  <footer>
+    <span>RWS Comment Extractor · runs locally in your browser</span>
+    <span id="footMeta">Company Confidential  © 2026 Eli Lilly and Company</span>
+  </footer>
+</div>
+
+<script>
+/* =====================================================================
+ *  RWS Comment Extractor v2 — main script
+ *  See README block at the top of this file for the design overview.
+ * ===================================================================== */
+
+if (typeof pdfjsLib !== 'undefined') {
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+
+const $ = (id) => document.getElementById(id);
+const step1 = $('step1'), step2 = $('step2'), step3 = $('step3'),
+      stepHop = $('stepHop');
+const dropPrior = $('dropPrior'), filePrior = $('filePrior'), priorFile = $('priorFile');
+const dropZip = $('dropZip'), fileZip = $('fileZip'), zipFile = $('zipFile');
+const dropHop = $('dropHop'), fileHop = $('fileHop'), hopFile = $('hopFile');
+const step1Meta = $('step1Meta'), step3Meta = $('step3Meta'),
+      hopMeta = $('hopMeta');
+const roundPills = $('roundPills'), roundNote = $('roundNote');
+const optScreens = $('optScreens'), optFlagLate = $('optFlagLate');
+const btnRun = $('btnRun'), btnReset = $('btnReset'),
+      btnDownload = $('btnDownload'), btnAnother = $('btnAnother');
+const btnRunSuffix = $('btnRunSuffix');
+const progressBox = $('progressBox'), progressTitle = $('progressTitle');
+const progressCount = $('progressCount'), progressFill = $('progressFill');
+const progressMsg = $('progressMsg');
+const logEl = $('log');
+const result = $('result'), resultTitle = $('resultTitle'),
+      resultSub = $('resultSub'), statsEl = $('stats'),
+      roundsDisplay = $('roundsDisplay');
+
+let priorBlob = null;
+let priorState = null;
+let zipBlobFile = null;
+let hopBlobFile = null;
+let outBlob = null;
+let outName = 'comments.xlsx';
+let currentRound = 1;
+
+// ============================================================
+// Language & scale mappings
+// ============================================================
+const LANG_MAP = {
+  "Chinese - TW": "TW",  "Chinese  - TW": "TW",
+  "Czech - CZ": "CZ", "Danish DK": "DK", "Dutch BE": "nlBE",
+  "English - CA": "enCA", "English - UK": "enGB",
+  "French - BE": "frBE", "French - CA": "frCA", "German GE": "deDE",
+  "Japanese JP": "JP", "Korean - SK": "SK", "Portuguese - BR": "BR",
+  "Simplified Chinese - CH": "CH",
+  "Spanish - AR": "esAR", "Spanish - MX": "esMX",
+  "Spanish - PR": "esPR", "Spanish - US": "esUS",
+};
+function languageCode(folderName) {
+  if (LANG_MAP[folderName]) return LANG_MAP[folderName];
+  const cleaned = folderName.replace(/  +/g, ' ').trim();
+  if (cleaned.includes(' - ')) return cleaned.split(' - ').pop().trim();
+  const parts = cleaned.split(/\s+/);
+  return parts[parts.length - 1] || cleaned;
+}
+
+// Friendly display name per language code — used as the Excel tab name.
+const LANG_DISPLAY = {
+  "TW":   "Chinese - TW",
+  "CZ":   "Czech - CZ",
+  "DK":   "Danish - DK",
+  "nlBE": "Dutch - BE",
+  "enCA": "English - CA",
+  "enGB": "English - UK",
+  "frBE": "French - BE",
+  "frCA": "French - CA",
+  "deDE": "German - DE",
+  "JP":   "Japanese - JP",
+  "SK":   "Korean - SK",
+  "BR":   "Portuguese - BR",
+  "CH":   "Chinese (Simp.) - CH",
+  "esAR": "Spanish - AR",
+  "esMX": "Spanish - MX",
+  "esPR": "Spanish - PR",
+  "esUS": "Spanish - US",
+};
+function languageDisplay(code, fallbackFolder) {
+  if (LANG_DISPLAY[code]) return LANG_DISPLAY[code];
+  if (fallbackFolder) return fallbackFolder.replace(/  +/g, ' ').trim();
+  return code;
+}
+
+const SCALE_PATTERNS = [
+  [/qb-?PRO[-_]([A-Z0-9]+(?:[-_][A-Z0-9]+)?)/i, m => `qb-PRO ${m[1]}`],
+  [/CSSRS[\s_-]*Baseline/i, () => "CSSRS Baseline"],
+  [/CSSRS[\s_-]*(LA|Last\s*assessed)/i, () => "CSSRS LA"],
+  [/CSSRS[\s_-]*email/i, () => "CSSRS Email"],
+  [/columbia.*?(primera[\s_]?evaluaci|evaluaci[oó]n[\s_]?inicial|cribado|screening)/i, () => "CSSRS Baseline"],
+  [/columbia.*?(desde[\s_]?la[\s_]?[uú]ltima|last[\s_]?assess|depuis[\s_]?la[\s_]?derni[èe]re)/i, () => "CSSRS LA"],
+  [/\bCSSRS\b/i, () => "CSSRS"],
+  [/columbia/i, () => "CSSRS"],
+  [/\bsuicid/i, () => "CSSRS"],
+  [/Daily\s*diary\s*missed\s*digest/i, () => "Daily diary missed digest"],
+  [/Daily\s*diary\s*notification/i, () => "Daily diary notification"],
+  [/Daily\s*diary/i, () => "Daily diary"],
+  [/SMID\s*notification/i, () => "SMID notification"],
+  [/SMID\s*weekly/i, () => "SMID weekly"],
+  [/\bSMID\b/i, () => "SMID"],
+  [/Conmed\s*Pain\s*Diary.*Acetamin/i, () => "Conmed Pain Diary (Acetaminophen)"],
+  [/Conmed\s*Pain\s*Diary.*Ibuprof/i, () => "Conmed Pain Diary (Ibuprofen)"],
+  [/Conmed\s*Pain\s*Diary/i, () => "Conmed Pain Diary"],
+  [/pain[\s_-]*conmed/i, () => "Pain Conmed"],
+  [/pain[\s_-]*scale/i, () => "Pain Scale"],
+  [/injection|injekt|inject|diario_de_inyecci|journal_des_injections/i, () => "Injection diary"],
+  [/\b(CM\d+[A-Z]?)\b/i, m => m[1]],
+  [/\b(EC\d+)\b/i, m => m[1]],
+  [/\b(FAS\d+[A-Z]?)\b/i, m => m[1]],
+  [/\b(PHQ9?\d*[-]?[A-Z]?)\b/i, m => m[1]],
+  [/\b(WOMAC|WOMOINRS\d*)\b/i, m => m[1]],
+  [/\b(WPAI\d*[A-Z\-]*)\b/i, m => m[1]],
+  [/\b(EQ5D5L\d*[A-Z\-]*)\b/i, m => m[1]],
+  [/\b(PNRS\d*)\b/i, m => m[1]],
+  [/\b(PGI[A-Z]+\d*[A-Z\-]*)\b/i, m => m[1]],
+  [/missed[\s_-]*dose/i, () => "Missed dose"],
+  [/interrupted[\s_-]*dose/i, () => "Interrupted dose"],
+  [/multiple[\s_-]*dose/i, () => "Multiple dose"],
+  [/practice[\s_-]*questions?/i, () => "Practice Questions"],
+  [/platform[\s_-]*screens?/i, () => "Platform Screens"],
+  [/\bFAS\b[\s_-]*site/i, () => "FAS Site Trigger"],
+  [/adhoc[\s_-]*trigger/i, () => "ADHOC Trigger"],
+];
+function detectScale(filename) {
+  for (const [pat, build] of SCALE_PATTERNS) {
+    const m = filename.match(pat);
+    if (m) {
+      let r = build(m);
+      if (/^(qb-PRO\s+)?[A-Za-z0-9\-]+$/.test(r) && /\d/.test(r)) {
+        if (/^qb-PRO\s/i.test(r)) r = 'qb-PRO ' + r.slice(7).toUpperCase();
+        else r = r.toUpperCase();
+      }
+      return r;
+    }
+  }
+  let base = filename.replace(/\.pdf$/i, '');
+  base = base.replace(/[-_]for[-_ ]?(updates?|atom\s*\d+|further\s*updates?).*$/i, '');
+  base = base.replace(/[-_]reviewed.*$/i, '');
+  base = base.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+  return base.slice(0, 50) || 'Other';
+}
+const isQbPro = f => /qb-?PRO/i.test(f);
+
+// ============================================================
+// Logging / progress UI
+// ============================================================
+function log(text, kind = 'info') {
+  logEl.classList.add('active');
+  const row = document.createElement('div');
+  row.className = 'log-row';
+  row.innerHTML = `<span class="log-tag ${kind}">${kind}</span><span class="log-text"></span>`;
+  row.querySelector('.log-text').textContent = text;
+  logEl.appendChild(row);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function setProgress(done, total, msg) {
+  progressBox.classList.add('active');
+  progressCount.textContent = `${done} / ${total}`;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  progressFill.style.width = pct + '%';
+  if (msg !== undefined) progressMsg.textContent = msg;
+}
+function hideProgress() { progressBox.classList.remove('active'); }
+
+// ============================================================
+// Drag & drop
+// ============================================================
+function wireDropzone(dz, input, onChosen, acceptPattern) {
+  ['dragenter','dragover'].forEach(ev =>
+    dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add('over'); }));
+  ['dragleave','drop'].forEach(ev =>
+    dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove('over'); }));
+  dz.addEventListener('drop', e => {
+    const f = e.dataTransfer.files?.[0];
+    if (f) handle(f);
+  });
+  input.addEventListener('change', e => {
+    const f = e.target.files?.[0];
+    if (f) handle(f);
+  });
+  function handle(f) {
+    if (acceptPattern && !new RegExp(acceptPattern + '$', 'i').test(f.name)) {
+      log(`Expected a ${acceptPattern} file (got "${f.name}")`, 'err');
+      return;
+    }
+    onChosen(f);
+  }
+}
+
+wireDropzone(dropPrior, filePrior, async (f) => {
+  priorBlob = f;
+  priorFile.textContent = `${f.name}  ·  ${(f.size / 1024).toFixed(0)} KB`;
+  priorFile.style.display = 'inline-block';
+  dropPrior.classList.add('has-file');
+  step1.classList.add('has-input');
+  try {
+    priorState = await readPriorWorkbook(f);
+    const maxRound = Math.max(0, ...priorState.roundsMeta.map(m => m.round));
+    const nextRound = Math.min(5, maxRound + 1);
+    selectRound(nextRound);
+    step1Meta.textContent = `Round ${maxRound} loaded`;
+    log(`Loaded prior workbook (last completed round: ${maxRound}, ${priorState.threads.length} threads)`, 'ok');
+    refreshRoundUI();
+  } catch (e) {
+    log('Could not read that workbook as a prior round: ' + (e.message || e), 'err');
+    priorState = null;
+    step1Meta.textContent = 'Skip for Round 1';
+  }
+  refreshRunButton();
+}, '\\.xlsx');
+
+wireDropzone(dropZip, fileZip, (f) => {
+  zipBlobFile = f;
+  zipFile.textContent = `${f.name}  ·  ${(f.size / (1024*1024)).toFixed(1)} MB`;
+  zipFile.style.display = 'inline-block';
+  dropZip.classList.add('has-file');
+  step2.classList.add('has-input');
+  refreshRunButton();
+}, '\\.zip');
+
+wireDropzone(dropHop, fileHop, (f) => {
+  hopBlobFile = f;
+  hopFile.textContent = `${f.name}  ·  ${(f.size / (1024*1024)).toFixed(1)} MB`;
+  hopFile.style.display = 'inline-block';
+  dropHop.classList.add('has-file');
+  stepHop.classList.add('has-input');
+  hopMeta.textContent = 'Screens loaded';
+  refreshRunButton();
+}, '\\.zip');
+
+roundPills.addEventListener('click', e => {
+  const p = e.target.closest('.round-pill');
+  if (!p) return;
+  selectRound(parseInt(p.dataset.round, 10));
+});
+function selectRound(r) {
+  currentRound = r;
+  [...roundPills.querySelectorAll('.round-pill')].forEach(p => {
+    p.classList.toggle('active', parseInt(p.dataset.round, 10) === r);
+  });
+  refreshRoundUI();
+}
+function refreshRoundUI() {
+  step3Meta.textContent = `Round ${currentRound}`;
+  if (currentRound === 1 && !priorState) {
+    roundNote.textContent = 'New workbook — this will be Round 1.';
+  } else if (priorState) {
+    const max = Math.max(0, ...priorState.roundsMeta.map(m => m.round));
+    if (currentRound <= max) {
+      roundNote.innerHTML = `Round ${currentRound} already exists in the prior workbook — running again will <b>replace</b> its data.`;
+    } else if (currentRound === max + 1) {
+      roundNote.textContent = `Will append as Round ${currentRound} (after the existing Round ${max}).`;
+    } else {
+      roundNote.innerHTML = `Skipping rounds. Prior workbook ends at Round ${max}; this will create Round ${currentRound}.`;
+    }
+  } else {
+    roundNote.innerHTML = `Doing Round ${currentRound} with no prior workbook. Late-comment detection won't work without an earlier round to compare against.`;
+  }
+  btnRunSuffix.textContent = priorState ? '·  append' : '·  new file';
+
+  // Flag-late only has meaning when comparing this round against an earlier
+  // one. On Round 1 (or any round with no prior workbook to compare against)
+  // disable the checkbox and grey out its label.
+  const lateMeaningful = currentRound > 1;
+  const lateLabel = optFlagLate.closest('label');
+  optFlagLate.disabled = !lateMeaningful;
+  if (lateLabel) lateLabel.classList.toggle('disabled', !lateMeaningful);
+}
+function refreshRunButton() { btnRun.disabled = !zipBlobFile; }
+
+btnReset.addEventListener('click', resetAll);
+btnAnother.addEventListener('click', () => {
+  result.classList.remove('active');
+  resetAll();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+function resetAll() {
+  priorBlob = null; priorState = null;
+  zipBlobFile = null; hopBlobFile = null;
+  outBlob = null;
+  filePrior.value = ''; fileZip.value = ''; fileHop.value = '';
+  priorFile.textContent = ''; priorFile.style.display = 'none';
+  zipFile.textContent = ''; zipFile.style.display = 'none';
+  hopFile.textContent = '';  hopFile.style.display  = 'none';
+  dropPrior.classList.remove('has-file'); dropZip.classList.remove('has-file');
+  dropHop.classList.remove('has-file');
+  step1.classList.remove('has-input'); step2.classList.remove('has-input');
+  stepHop.classList.remove('has-input');
+  step1Meta.textContent = 'Skip for Round 1';
+  hopMeta.textContent = 'Recommended';
+  selectRound(1);
+  hideProgress();
+  logEl.classList.remove('active'); logEl.innerHTML = '';
+  result.classList.remove('active');
+  refreshRunButton();
+}
+
+btnDownload.addEventListener('click', () => { if (outBlob) saveAs(outBlob, outName); });
+
+btnRun.addEventListener('click', async () => {
+  if (!zipBlobFile) return;
+  btnRun.disabled = true; btnReset.disabled = true;
+  result.classList.remove('active');
+  logEl.classList.remove('active'); logEl.innerHTML = '';
+  try { await runPipeline(); }
+  catch (err) {
+    console.error(err);
+    log('Fatal error: ' + (err.message || err), 'err');
+    progressTitle.innerHTML = 'Failed';
+  } finally {
+    btnRun.disabled = !zipBlobFile; btnReset.disabled = false;
+  }
+});
+
+// ============================================================
+// PIPELINE
+// ============================================================
+async function runPipeline() {
+  let priorThreads = priorState ? priorState.threads.slice() : [];
+  let priorRoundsMeta = priorState ? priorState.roundsMeta.slice() : [];
+  let priorHopByRound = (priorState && priorState.hopByRound) ? { ...priorState.hopByRound } : {};
+  // If overwriting an existing round, strip prior entries for that round
+  for (const t of priorThreads) {
+    t.rounds = t.rounds.filter(r => r.round !== currentRound);
+  }
+  // Drop threads that became empty after the strip (i.e. only existed in this round)
+  priorThreads = priorThreads.filter(t => t.rounds.length > 0);
+  // If overwriting, also drop the prior HOP entry for this round (it will be
+  // replaced below if the user uploaded a new HOP).
+  delete priorHopByRound[currentRound];
+
+  setProgress(0, 1, 'Reading zip…');
+  progressTitle.innerHTML = '<span class="spinner"></span>Reading zip…';
+
+  const newCommentsByLang = await processZip(zipBlobFile, {
+    embedScreenshots: optScreens.checked,
+  });
+
+  // Parse this round's screens zip if provided
+  let thisRoundHop = null;
+  if (hopBlobFile) {
+    progressTitle.innerHTML = '<span class="spinner"></span>Reading screens zip…';
+    try {
+      thisRoundHop = await parseHopZip(hopBlobFile);
+      log(`Screens zip: ${thisRoundHop.length} screen(s) identified.`, 'info');
+      priorHopByRound[currentRound] = thisRoundHop;
+    } catch (e) {
+      log(`Screens zip could not be parsed: ${e.message || e}`, 'warn');
+    }
+  }
+
+  progressTitle.innerHTML = '<span class="spinner"></span>Matching to prior rounds…';
+  setProgress(1, 1, 'Building threads…');
+
+  // Build a quick lookup: for each (langCode|"*", scale) → set of rounds that
+  // contained it in the HOP. The "*" key captures language-agnostic HOP entries.
+  const hopIndex = buildHopIndex(priorHopByRound);
+
+  // Threads searched by findBestMatch: ONLY threads that already existed
+  // BEFORE this run (i.e. from prior rounds). New threads we create during
+  // this loop go into `newlyAddedThreads` so they can't absorb subsequent
+  // comments in the same round — each new comment in this round is its own
+  // thread until we explicitly link it across rounds in a later run.
+  const matchableThreads = priorThreads.slice();
+  const newlyAddedThreads = [];
+
+  let newComments = 0, lateFlags = 0, matchedToPrior = 0;
+  let devMissCount = 0, rwsMissCount = 0;
+  for (const langFolder of Object.keys(newCommentsByLang)) {
+    const langCode = languageCode(langFolder);
+    for (const nc of newCommentsByLang[langFolder]) {
+      const match = findBestMatch(nc, matchableThreads);
+      if (match) {
+        match.rounds.push({
+          round: currentRound,
+          original: nc.original,
+          reply: nc.reply,
+          author: nc.author,
+          rect: nc.rect,
+        });
+        matchedToPrior++;
+        if (!match.screenshot && nc.screenshotPng) match.screenshot = nc.screenshotPng;
+      } else {
+        const isLate = (currentRound > 1) && optFlagLate.checked;
+        if (isLate) lateFlags++;
+
+        // Determine late root cause. Classification matrix:
+        //   - 'rws_missed' — scale WAS in a prior round's HOP (RWS overlooked it)
+        //   - 'dev_missed' — not in any prior HOP (we didn't send it)
+        //   - null         — no HOP data uploaded at all, can't determine
+        //
+        // Note: the single user-visible label in the workbook ("This comment
+        // was not included in the previous round...") is the same regardless
+        // of root cause. The root-cause classification stays in __data only
+        // for audit (Scope tab) purposes.
+        let lateRootCause = null;
+        if (isLate) {
+          const priorRounds = Object.keys(priorHopByRound).map(Number).filter(r => r < currentRound);
+          if (priorRounds.length > 0) {
+            const wasInPriorHop = isScaleInAnyHop(hopIndex, nc.scale, langCode, priorRounds);
+            if (wasInPriorHop) {
+              lateRootCause = 'rws_missed';
+              rwsMissCount++;
+            } else {
+              lateRootCause = 'dev_missed';
+              devMissCount++;
+            }
+          }
+        }
+
+        newlyAddedThreads.push({
+          language_folder: langFolder,
+          language_code: langCode,
+          scale: nc.scale,
+          pdf_filename: nc.pdf_filename,
+          page: nc.page,
+          rect: nc.rect,
+          first_seen_round: currentRound,
+          flag_late: isLate,
+          late_root_cause: lateRootCause,
+          screenshot: nc.screenshotPng || null,
+          screenshot_aspect: nc.screenshotAspect || null,
+          rounds: [{
+            round: currentRound,
+            original: nc.original,
+            reply: nc.reply,
+            author: nc.author,
+            rect: nc.rect,
+          }],
+        });
+        newComments++;
+      }
+    }
+  }
+  // Combine prior threads (which may now have appended round entries from
+  // matches) with the newly added threads from this run.
+  priorThreads = priorThreads.concat(newlyAddedThreads);
+
+  priorRoundsMeta = priorRoundsMeta.filter(m => m.round !== currentRound);
+  priorRoundsMeta.push({
+    round: currentRound,
+    date: new Date().toISOString().slice(0, 10),
+    zipName: zipBlobFile.name,
+    hopName: hopBlobFile ? hopBlobFile.name : null,
+  });
+  priorRoundsMeta.sort((a, b) => a.round - b.round);
+
+  progressTitle.innerHTML = '<span class="spinner"></span>Building Excel…';
+  setProgress(1, 1, 'Composing workbook…');
+  log(`Round ${currentRound}: new=${newComments}, matched=${matchedToPrior}, late=${lateFlags}` +
+      (lateFlags > 0 && (devMissCount + rwsMissCount > 0)
+        ? ` (RWS-missed=${rwsMissCount}, dev-missed=${devMissCount})` : ''),
+      'info');
+
+  const blob = await buildWorkbook(priorThreads, priorRoundsMeta, priorHopByRound);
+  outBlob = blob;
+  outName = makeOutputName(zipBlobFile.name, priorRoundsMeta);
+
+  hideProgress();
+  showResult({
+    threads: priorThreads, roundsMeta: priorRoundsMeta,
+    newComments, matchedToPrior, lateFlags,
+  });
+}
+
+// ============================================================
+// Common zip filters used by every zip we ingest (RWS comments, HOP, initial
+// source). These guard against three real-world messes:
+//   • files stashed under "Obsolete"/"Archive" folders (intentionally retired)
+//   • the same file accidentally included twice (often a v1 left next to a v2)
+//   • UTF-8 misspellings of those folder names ("Obselete", "Archieve")
+// ============================================================
+
+// True if any folder in the path is named like "Obsolete" / "Archive"
+// (case-insensitive, common misspellings accepted). Folders only — we never
+// match against the filename itself.
+function isObsoletePath(path) {
+  const segs = path.split('/');
+  for (const seg of segs.slice(0, -1)) {
+    const s = seg.trim().toLowerCase();
+    if (s === 'obsolete' || s === 'obselete' ||
+        s === 'archive'  || s === 'archieve' || s === 'archived') {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Deduplicate by (top-level folder, lowercase basename). When multiple files
+// collide, keep the one with the latest zip-entry timestamp.
+function dedupeByLatest(entries, pathOf) {
+  const byKey = new Map();
+  for (const e of entries) {
+    const path = pathOf(e);
+    const segs = path.split('/');
+    const lang = segs.length > 1 ? segs[0] : '_';
+    const basename = segs[segs.length - 1].toLowerCase();
+    const key = `${lang}||${basename}`;
+    const cur = byKey.get(key);
+    const dCur = cur ? (pathOf(cur, true) || new Date(0)) : null;
+    const dE = e.date || new Date(0);
+    if (!cur || dE > dCur) byKey.set(key, e);
+  }
+  return [...byKey.values()];
+}
+
+// ============================================================
+// HOP zip parsing — extract a list of {language, scale, filename} tuples
+// from the HOP zip. We don't open any files; we just look at paths and
+// filenames, applying the same SCALE_PATTERNS and LANG_MAP we already use
+// for the RWS comments zip.
+// ============================================================
+async function parseHopZip(file) {
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  let allFiles = Object.values(zip.files).filter(f => !f.dir);
+  if (!allFiles.length) throw new Error('Screens zip is empty.');
+  // Apply the two shared filters
+  const beforeObsolete = allFiles.length;
+  allFiles = allFiles.filter(f => !isObsoletePath(f.name));
+  const afterObsolete = allFiles.length;
+  allFiles = dedupeByLatest(allFiles, (e, wantDate) => wantDate ? e.date : e.name);
+  const afterDedupe = allFiles.length;
+  if (beforeObsolete !== afterObsolete) {
+    log(`Screens: skipped ${beforeObsolete - afterObsolete} file(s) in Obsolete/Archive folders.`, 'info');
+  }
+  if (afterObsolete !== afterDedupe) {
+    log(`Screens: deduped ${afterObsolete - afterDedupe} same-name file(s) (kept latest).`, 'info');
+  }
+  const out = [];
+  for (const f of allFiles) {
+    const segs = f.name.split('/');
+    const filename = segs[segs.length - 1];
+    if (!filename) continue;
+    // Pull language from any folder path segment whose name maps to a language code
+    let langCode = null;
+    for (const seg of segs.slice(0, -1)) {
+      const candidate = languageCode(seg);
+      if (LANG_MAP[seg] || (candidate && candidate !== seg)) { langCode = candidate; break; }
+    }
+    const scale = detectScale(filename);
+    out.push({
+      language: langCode || '*',  // '*' = language-agnostic HOP entry
+      scale,
+      filename,
+    });
+  }
+  return out;
+}
+
+
+
+// Build a fast lookup from (langCode, scale) → set of rounds it appeared in.
+// We index BOTH by exact language code AND by '*' so a language-agnostic HOP
+// entry (no language folder) still answers "yes" for any language's lookup.
+function buildHopIndex(hopByRound) {
+  // index[`${lang}||${scale}`] = Set<round>
+  const idx = new Map();
+  for (const [roundStr, entries] of Object.entries(hopByRound || {})) {
+    const round = Number(roundStr);
+    for (const e of entries) {
+      const scale = (e.scale || '').toLowerCase();
+      if (!scale || scale === 'unknown') continue;
+      const key = `${e.language || '*'}||${scale}`;
+      if (!idx.has(key)) idx.set(key, new Set());
+      idx.get(key).add(round);
+    }
+  }
+  return idx;
+}
+
+function isScaleInAnyHop(hopIndex, scale, langCode, rounds) {
+  if (!scale) return false;
+  const scaleLower = scale.toLowerCase();
+  // Check both language-specific and language-agnostic entries
+  const keys = [`${langCode}||${scaleLower}`, `*||${scaleLower}`];
+  for (const k of keys) {
+    const roundSet = hopIndex.get(k);
+    if (!roundSet) continue;
+    for (const r of rounds) if (roundSet.has(r)) return true;
+  }
+  return false;
+}
+
+function makeOutputName(zipName, roundsMeta) {
+  const base = zipName.replace(/\.zip$/i, '');
+  const roundTag = 'R' + roundsMeta.map(m => m.round).join('R');
+  return `${base}_comments_${roundTag}.xlsx`;
+}
+
+// ============================================================
+// Process zip → flat list of comments per language folder
+// ============================================================
+async function processZip(file, { embedScreenshots }) {
+  const zipData = await file.arrayBuffer();
+  const zip = await JSZip.loadAsync(zipData);
+  let allFiles = Object.values(zip.files).filter(f => !f.dir);
+  let pdfFiles = allFiles.filter(f => /\.pdf$/i.test(f.name));
+  if (!pdfFiles.length) throw new Error('No PDF files in zip.');
+
+  // Apply the two shared filters: skip Obsolete/Archive folders, then dedupe
+  // same-basename files in the same top-level folder by latest timestamp.
+  const totalRaw = pdfFiles.length;
+  pdfFiles = pdfFiles.filter(f => !isObsoletePath(f.name));
+  const afterObsolete = pdfFiles.length;
+  pdfFiles = dedupeByLatest(pdfFiles, (e, wantDate) => wantDate ? e.date : e.name);
+  const afterDedupe = pdfFiles.length;
+  if (totalRaw !== afterObsolete) {
+    log(`Skipped ${totalRaw - afterObsolete} PDF(s) in Obsolete/Archive folders.`, 'info');
+  }
+  if (afterObsolete !== afterDedupe) {
+    log(`Deduped ${afterObsolete - afterDedupe} same-name PDF(s) (kept latest version).`, 'info');
+  }
+
+  const firstSegments = new Set(pdfFiles.map(f => f.name.split('/')[0]));
+  let stripPrefix = '';
+  if (firstSegments.size === 1) {
+    const secondSegments = new Set(pdfFiles.map(f => f.name.split('/')[1]).filter(Boolean));
+    if (secondSegments.size > 1) stripPrefix = [...firstSegments][0] + '/';
+  }
+  log(`Processing ${pdfFiles.length} PDF file(s) from zip.`, 'info');
+
+  const byLang = {};
+  for (const f of pdfFiles) {
+    const p = stripPrefix ? f.name.slice(stripPrefix.length) : f.name;
+    const segs = p.split('/');
+    if (segs.length < 2) continue;
+    const langFolder = segs[0];
+    const fileName = segs[segs.length - 1];
+    (byLang[langFolder] ||= []).push({ entry: f, fileName });
+  }
+
+  const total = pdfFiles.length;
+  let done = 0;
+  setProgress(0, total, '');
+
+  const result = {};
+  for (const [langFolder, items] of Object.entries(byLang)) {
+    const langCode = languageCode(langFolder);
+    result[langFolder] = [];
+    log(`[${langCode}] ${langFolder} — ${items.length} PDF(s)`, 'info');
+
+    for (const { entry, fileName } of items) {
+      done++;
+      progressTitle.innerHTML = `<span class="spinner"></span>Processing ${done} of ${total}…`;
+      setProgress(done - 1, total, `${langCode} / ${fileName}`);
+      const scale = detectScale(fileName);
+      const qb = isQbPro(fileName);
+      try {
+        const buf = await entry.async('arraybuffer');
+        const rows = await extractFromPdf(buf, {
+          fileName, langFolder, langCode, scale, isQb: qb,
+          embedScreenshots: embedScreenshots,
+        });
+        if (rows.length === 0) {
+          log(`  · ${fileName} (no comments)`, 'info');
+        } else {
+          result[langFolder].push(...rows);
+          log(`  ✓ ${fileName} → ${rows.length} comment(s)`, 'ok');
+        }
+      } catch (err) {
+        log(`  ✗ ${fileName}: ${err.message || err}`, 'warn');
+      }
+      setProgress(done, total, `${langCode} / ${fileName}`);
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+  return result;
+}
+
+// ============================================================
+// Per-PDF extraction (annotations + screenshots)
+// ============================================================
+//
+// Improvements vs. earlier version:
+//   1. Popup fallback: if a parent annotation has empty contents but a
+//      linked Popup carries the text, use the Popup's contents/author.
+//   2. Nested reply chains: a reply that points to another reply (e.g.
+//      linguist → RWS → linguist again) now collapses to the root original.
+//      Previously such replies were lost.
+//   3. Chronological reply ordering via creationDate where present.
+//   4. Screenshots taken for ALL PDFs when option is enabled (not just qb-PRO).
+//
+async function extractFromPdf(arrayBuffer, ctx) {
+  const data = new Uint8Array(arrayBuffer.slice(0));
+  const pdf = await pdfjsLib.getDocument({ data, isEvalSupported: false }).promise;
+  const rows = [];
+  try {
+    // Page labels (if defined in the PDF) — e.g. ["i", "ii", "1", "2", "3"]
+    // for documents with Roman-numeral front matter. We use these in
+    // preference to physical page indices so the page number shown in the
+    // workbook matches what the reviewer sees in their PDF viewer.
+    let pageLabels = null;
+    try { pageLabels = await pdf.getPageLabels(); } catch (_) { pageLabels = null; }
+
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+      const page = await pdf.getPage(pageNum);
+      const annots = await page.getAnnotations();
+      // Resolve the label for this page; many PDFs return labels equal to
+      // their physical numbers ("1","2",...), so the displayed value is
+      // identical for those.
+      const pageDisplay = (pageLabels && pageLabels[pageNum - 1]) || pageNum;
+
+      // --- Pass 1: index popups by their parent annotation id so we can
+      //     borrow their contents when the parent itself is empty.
+      const popupByParent = new Map();
+      for (const a of annots) {
+        if (a.subtype !== 'Popup') continue;
+        const parentId = a.parentId || a.parent || null;
+        if (!parentId) continue;
+        const txt = (a.contentsObj?.str ?? a.contents ?? '').replace(/\r/g, '\n').trim();
+        const auth = (a.titleObj?.str ?? a.title ?? '').trim();
+        popupByParent.set(parentId, { text: txt, author: auth });
+      }
+
+      // --- Pass 2: collect "real" comment annotations (excluding form
+      //     widgets, hyperlinks, and the Popup containers themselves).
+      const comments = [];
+      for (const a of annots) {
+        if (a.subtype === 'Widget' || a.subtype === 'Link' || a.subtype === 'Popup') continue;
+
+        let contents = (a.contentsObj?.str ?? a.contents ?? '').replace(/\r/g, '\n').trim();
+        let author   = (a.titleObj?.str ?? a.title ?? '').trim();
+        let inReplyTo = a.inReplyTo || null;
+        let isVisualOnly = false;
+
+        // Popup fallback when the parent annotation has empty contents
+        if (!contents && popupByParent.has(a.id)) {
+          const pop = popupByParent.get(a.id);
+          if (pop.text)   contents = pop.text;
+          if (!author && pop.author) author = pop.author;
+        }
+
+        // No text at all? It's a visual marker the linguist or RWS placed
+        // without typing anything (sticky-note placeholder, highlight
+        // rectangle, ink stroke). The user explicitly asked to surface
+        // these — give them a placeholder, and detach from any reply chain
+        // so a real comment's Reply column never gets polluted with the
+        // empty placeholder text.
+        if (!contents) {
+          contents = '(visual marker — no comment text)';
+          isVisualOnly = true;
+          inReplyTo = null;
+        }
+
+        comments.push({
+          id: a.id,
+          author: author || 'Unknown',
+          contents,
+          rect: a.rect,
+          inReplyTo,
+          isVisualOnly,
+          creationDate: a.creationDate || a.modificationDate || null,
+        });
+      }
+      if (!comments.length) { page.cleanup?.(); continue; }
+
+      // --- Sort top-to-bottom, left-to-right by PDF coordinates
+      comments.sort((a, b) => {
+        const ay = b.rect[3], by = a.rect[3];
+        if (Math.abs(by - ay) > 2) return ay > by ? 1 : -1;
+        return a.rect[0] - b.rect[0];
+      });
+
+      // --- Resolve reply chains to their root original
+      //     A child's `inReplyTo` may point to another reply. Walk the chain
+      //     until we hit a node with no inReplyTo (the root original).
+      //     Visual-only annotations are never followed as parents — they're
+      //     placeholders for empty markers and shouldn't absorb real comments
+      //     into their "thread".
+      const byId = Object.fromEntries(comments.map(c => [c.id, c]));
+      function findRoot(c) {
+        let cur = c;
+        const visited = new Set();
+        while (cur.inReplyTo && byId[cur.inReplyTo] &&
+               !byId[cur.inReplyTo].isVisualOnly && !visited.has(cur.id)) {
+          visited.add(cur.id);
+          cur = byId[cur.inReplyTo];
+        }
+        return cur;
+      }
+
+      const childrenByRoot = new Map();
+      const originals = [];
+      for (const c of comments) {
+        const root = findRoot(c);
+        if (root.id === c.id) {
+          originals.push(c);
+        } else {
+          if (!childrenByRoot.has(root.id)) childrenByRoot.set(root.id, []);
+          childrenByRoot.get(root.id).push(c);
+        }
+      }
+
+      // --- Render whole page once if we'll be cropping screenshots
+      const baseViewport = page.getViewport({ scale: 1.0 });
+      let pageCanvas = null, renderScale = 1;
+      if (ctx.embedScreenshots) {
+        try {
+          ({ canvas: pageCanvas, scale: renderScale } =
+              await renderPageAtBudget(page, baseViewport));
+        } catch (e) {
+          log(`  ! could not render ${ctx.fileName} p${pageNum}: ${e.message || e}`, 'warn');
+        }
+      }
+
+      // --- Emit one row per original (with all replies merged into reply text)
+      for (const orig of originals) {
+        let originalText = orig.contents;
+        const replyTexts = [];
+        let isRwsOnly = false;
+
+        // Some annotations stash both the linguist comment and the RWS reply
+        // in a single body separated by "RWS:".
+        //
+        // Two cases:
+        //   (a) Whole content STARTS with "RWS:" — this is a standalone RWS
+        //       note with no preceding linguist comment. We keep the FULL
+        //       text (RWS: prefix preserved) as the Linguist Comment so it
+        //       shows up in the column users scan; the Reply column stays
+        //       blank because there is no separate reply.
+        //   (b) "RWS:" appears mid-text — split into linguist text before
+        //       and reply text after.
+        if (/^\s*RWS\s*:/i.test(originalText)) {
+          isRwsOnly = true;
+          originalText = originalText.trim();   // keep as-is, prefix intact
+        } else if (/\s+RWS\s*:/i.test(originalText)) {
+          const idx = originalText.search(/\s+RWS\s*:/i);
+          if (idx > 0) {
+            const replyPart = originalText.slice(idx).replace(/^\s*RWS\s*:\s*/i, '').trim();
+            if (replyPart) replyTexts.push(replyPart);
+            originalText = originalText.slice(0, idx).trim();
+          }
+        }
+
+        // Pull in any child replies, sorted by creationDate when present.
+        const childReplies = (childrenByRoot.get(orig.id) || []).slice();
+        childReplies.sort((a, b) => {
+          const da = a.creationDate ? Date.parse(a.creationDate) || 0 : 0;
+          const db = b.creationDate ? Date.parse(b.creationDate) || 0 : 0;
+          if (da !== db) return da - db;
+          return String(a.id).localeCompare(String(b.id));
+        });
+        for (const r of childReplies) {
+          const rt = r.contents.replace(/^\s*RWS\s*:\s*/i, '').trim();
+          const tag = (r.author && r.author !== orig.author) ? `[${r.author}] ` : '';
+          replyTexts.push(tag + rt);
+        }
+        // For RWS-only annotations with no child replies, leave Reply blank
+        // (the comment itself IS the RWS note — there is no separate reply).
+        // For everything else, fall back to the "(no RWS reply)" placeholder
+        // so the user knows the linguist hasn't received a response yet.
+        let replyCombined;
+        if (replyTexts.length) {
+          replyCombined = replyTexts.filter(Boolean).join('\n\n');
+        } else {
+          replyCombined = isRwsOnly ? '' : '(no RWS reply)';
+        }
+
+        // Full-page screenshot with highlight rectangle over the comment marker
+        let screenshotPng = null, screenshotAspect = null;
+        if (ctx.embedScreenshots && pageCanvas) {
+          try {
+            const { bytes, aspect } = await renderFullPageWithHighlight(
+              pageCanvas, renderScale, baseViewport, orig.rect
+            );
+            screenshotPng = bytes;
+            screenshotAspect = aspect;
+          } catch (e) { /* non-fatal */ }
+        }
+
+        rows.push({
+          language_folder: ctx.langFolder,
+          language_code: ctx.langCode,
+          scale: ctx.scale,
+          pdf_filename: ctx.fileName,
+          page: pageDisplay,
+          author: orig.author,
+          original: originalText,
+          reply: replyCombined,
+          rect: orig.rect,
+          isQbPro: ctx.isQb,
+          screenshotPng,
+          screenshotAspect,
+        });
+      }
+
+      if (pageCanvas) { pageCanvas.width = 0; pageCanvas.height = 0; }
+      page.cleanup?.();
+    }
+  } finally {
+    await pdf.destroy();
+  }
+  return rows;
+}
+
+// ============================================================
+// Page render + crop helpers
+// ============================================================
+async function renderPageAtBudget(page, baseViewport) {
+  const MAX_PIXELS = 8_000_000;
+  const baseW = baseViewport.width, baseH = baseViewport.height;
+  // Aim for 2.0× native resolution. That's about 192 DPI rendered against
+  // a 96-DPI baseline — enough that the embedded screenshot stays crisp in
+  // Excel, but ~36% fewer pixels to render than 2.5×. Fall back to a lower
+  // scale only if the page is so large that 2.0× would exceed the budget.
+  let scale = 2.0;
+  if (baseW * baseH * scale * scale > MAX_PIXELS) {
+    scale = Math.sqrt(MAX_PIXELS / (baseW * baseH));
+  }
+  scale = Math.max(0.18, Math.min(3.0, scale));
+  const viewport = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({
+    canvasContext: ctx, viewport,
+    intent: 'print', background: 'rgba(255,255,255,1)',
+  }).promise;
+  return { canvas, scale };
+}
+
+// Render the full page with a red highlight rectangle drawn over the comment
+// marker location. Unlike the previous cropFromCanvas, this gives the user
+// the WHOLE page as context — far easier to scan when the marker is near a
+// title or off in a corner. The output PNG is downscaled to a target max
+// width so file size stays reasonable while still being clear at 100% Excel
+// zoom and on moderate zoom-in.
+// Render a screenshot for one annotation. For normal-aspect pages we keep
+// the full page (good for context). For very tall pages — like screenshots
+// with popups expanded inline, where the page is 10-30× taller than wide —
+// the full page collapses to a paper-thin strip when scaled to fit Excel's
+// row-height limit, so we instead crop a readable window centred on the
+// comment. Either way the result is a PNG plus an aspect ratio so the
+// workbook builder can size the Excel cell proportionally.
+async function renderFullPageWithHighlight(pageCanvas, renderScale, baseViewport, rect) {
+  const pageW = baseViewport.width, pageH = baseViewport.height;
+  const pageAspect = pageW / pageH;  // width / height
+  // Threshold below which the embedded image at MAX_H≈480 would be less
+  // than ~240 px wide — too narrow to read at any zoom level.
+  const TALL_PAGE_THRESHOLD = 0.5;
+
+  // Comment rect in viewport coordinates (the marker's bounding box)
+  const [vx0, vy0] = baseViewport.convertToViewportPoint(rect[0], rect[3]);
+  const [vx1, vy1] = baseViewport.convertToViewportPoint(rect[2], rect[1]);
+  const ax0 = Math.min(vx0, vx1), ax1 = Math.max(vx0, vx1);
+  const ay0 = Math.min(vy0, vy1), ay1 = Math.max(vy0, vy1);
+
+  // Decide the source-rectangle in pageCanvas pixel coordinates. For normal
+  // pages: the entire canvas. For tall pages: a vertical slice centred on
+  // the comment, ~1.5× as tall as the page is wide so the result has a
+  // readable aspect ratio.
+  let sx, sy, sw, sh, srcOriginY = 0;
+  if (pageAspect >= TALL_PAGE_THRESHOLD) {
+    sx = 0; sy = 0;
+    sw = pageCanvas.width; sh = pageCanvas.height;
+  } else {
+    // Crop window: full page width, height = max(500pt, 1.5 × pageW) capped at pageH
+    const cropHeightPt = Math.min(pageH, Math.max(500, pageW * 1.5));
+    const commentCenterY = (ay0 + ay1) / 2;
+    let cropY0 = commentCenterY - cropHeightPt / 2;
+    let cropY1 = commentCenterY + cropHeightPt / 2;
+    if (cropY0 < 0)      { cropY1 -= cropY0; cropY0 = 0; }
+    if (cropY1 > pageH)  { cropY0 -= (cropY1 - pageH); cropY1 = pageH;
+                           cropY0 = Math.max(0, cropY0); }
+    sx = 0;
+    sy = Math.floor(cropY0 * renderScale);
+    sw = pageCanvas.width;
+    sh = Math.ceil((cropY1 - cropY0) * renderScale);
+    srcOriginY = cropY0;  // remember for highlight-rect math below
+  }
+
+  // Target embedded resolution. Cap so the PNG stays manageable while
+  // keeping the underlying pixels well above the cell display size so
+  // Excel zoom reveals detail.
+  const MAX_W = 1600, MAX_H = 2000;
+  let dw = sw, dh = sh;
+  if (dw > MAX_W) { dh = dh * (MAX_W / dw); dw = MAX_W; }
+  if (dh > MAX_H) { dw = dw * (MAX_H / dh); dh = MAX_H; }
+  dw = Math.round(dw); dh = Math.round(dh);
+  const dscale = dw / sw;  // single scale factor since we preserve aspect
+
+  const out = document.createElement('canvas');
+  out.width = dw; out.height = dh;
+  const ictx = out.getContext('2d');
+  ictx.fillStyle = '#ffffff';
+  ictx.fillRect(0, 0, dw, dh);
+  ictx.drawImage(pageCanvas, sx, sy, sw, sh, 0, 0, dw, dh);
+
+  // Highlight rectangle in OUTPUT canvas coordinates
+  const hx = ax0 * renderScale * dscale;
+  const hy = (ay0 - srcOriginY) * renderScale * dscale;
+  const hw = (ax1 - ax0) * renderScale * dscale;
+  const hh = (ay1 - ay0) * renderScale * dscale;
+  // Minimum dimension so tiny markers stay visible on the page/crop
+  const minDim = 36;
+  const drawW = Math.max(minDim, hw);
+  const drawH = Math.max(minDim, hh);
+  const drawX = hx - (drawW - hw) / 2;
+  const drawY = hy - (drawH - hh) / 2;
+  ictx.fillStyle = 'rgba(225, 36, 27, 0.18)';
+  ictx.fillRect(drawX, drawY, drawW, drawH);
+  ictx.strokeStyle = '#E1241B';
+  ictx.lineWidth = 3;
+  ictx.strokeRect(drawX, drawY, drawW, drawH);
+
+  const blob = await new Promise(res => out.toBlob(res, 'image/png'));
+  if (!blob) throw new Error('canvas.toBlob returned null');
+  const buf = await blob.arrayBuffer();
+  const aspect = dw / dh;  // width / height
+  out.width = 0; out.height = 0;
+  return { bytes: new Uint8Array(buf), aspect };
+}
+
+// ============================================================
+// Cross-round matching (location + text)
+// ============================================================
+function rectIoU(a, b) {
+  const ix0 = Math.max(a[0], b[0]);
+  const iy0 = Math.max(a[1], b[1]);
+  const ix1 = Math.min(a[2], b[2]);
+  const iy1 = Math.min(a[3], b[3]);
+  if (ix1 <= ix0 || iy1 <= iy0) return 0;
+  const inter = (ix1 - ix0) * (iy1 - iy0);
+  const areaA = (a[2] - a[0]) * (a[3] - a[1]);
+  const areaB = (b[2] - b[0]) * (b[3] - b[1]);
+  const union = areaA + areaB - inter;
+  return union > 0 ? inter / union : 0;
+}
+function rectCenterDist(a, b) {
+  const ax = (a[0]+a[2])/2, ay = (a[1]+a[3])/2;
+  const bx = (b[0]+b[2])/2, by = (b[1]+b[3])/2;
+  return Math.hypot(ax-bx, ay-by);
+}
+function tokenize(s) {
+  return new Set(
+    (s || '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+      .split(/\s+/)
+      .filter(t => t.length > 1)
+  );
+}
+function jaccard(a, b) {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const x of a) if (b.has(x)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+function findBestMatch(newC, threads) {
+  let best = null, bestScore = 0;
+  const newTokens = tokenize(newC.original);
+  // A "visual marker" thread is a placeholder for an annotation with no text
+  // content. It should NEVER merge with a real text comment, even at the
+  // same location — they're semantically different things.
+  const newIsVisual = (newC.original || '').startsWith('(visual marker');
+  for (const t of threads) {
+    if (t.pdf_filename !== newC.pdf_filename) continue;
+    if (t.language_folder !== newC.language_folder) continue;
+    if (t.page !== newC.page) continue;
+    const tFirstText = t.rounds[0]?.original || '';
+    const tIsVisual = tFirstText.startsWith('(visual marker');
+    if (tIsVisual !== newIsVisual) continue;
+    const iou = rectIoU(t.rect, newC.rect);
+    const dist = rectCenterDist(t.rect, newC.rect);
+    const sim = jaccard(newTokens, tokenize(tFirstText));
+    const locScore = iou >= 0.3 ? 1 : (dist < 60 ? 0.7 : 0);
+    // Visual markers all share the SAME placeholder text, so any two visual
+    // markers on the same page would have sim=1.0 and match by text alone.
+    // Require actual location proximity for visual-marker matches — they're
+    // only "the same" annotation if they're in roughly the same spot.
+    if (newIsVisual && tIsVisual && locScore === 0) continue;
+    const score = locScore * 0.5 + sim * 0.5;
+    if (score >= 0.45 && score > bestScore) { best = t; bestScore = score; }
+  }
+  return best;
+}
+
+// ============================================================
+// Read prior workbook (parse __data sheet → JSON, hydrate screenshots).
+// ============================================================
+async function readPriorWorkbook(file) {
+  const buf = await file.arrayBuffer();
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf);
+  const dataSheet = wb.getWorksheet('__data');
+  if (!dataSheet) throw new Error('No "__data" sheet — not an extractor workbook.');
+  let json = '';
+  dataSheet.eachRow({ includeEmpty: false }, (row) => {
+    const v = row.getCell(1).value;
+    if (typeof v === 'string') json += v;
+  });
+  if (!json) throw new Error('Empty __data sheet.');
+  let parsed;
+  try { parsed = JSON.parse(json); }
+  catch (e) { throw new Error('Could not parse __data JSON: ' + e.message); }
+  if (!parsed.threads) throw new Error('__data missing threads array.');
+
+  for (const t of parsed.threads) {
+    if (t.screenshot_b64) t.screenshot = base64ToBytes(t.screenshot_b64);
+    else t.screenshot = null;
+    delete t.screenshot_b64;
+    // Older workbooks (v2/v3) may have a `done` field. Drop it — no longer used.
+    delete t.done;
+  }
+  // Older workbooks (v2/v3/v4) won't have hopByRound — default to empty.
+  if (!parsed.hopByRound || typeof parsed.hopByRound !== 'object') {
+    parsed.hopByRound = {};
+  }
+  // v6 had an initialSource field that v7 retired. Drop it on read so it
+  // doesn't survive into the new workbook.
+  delete parsed.initialSource;
+
+  return parsed;
+}
+
+// ============================================================
+// Build the workbook
+// ============================================================
+async function buildWorkbook(threads, roundsMeta, hopByRound) {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'RWS Comment Extractor';
+  wb.created = new Date();
+
+  // Always emit columns for rounds 1 through max — so a Round-2 workbook
+  // built without a prior Round-1 file still SHOWS the Round-1 columns
+  // (they're just empty). Without this, a user running R2 alone would see
+  // only R2 columns and find the workbook confusing to compare to earlier
+  // structures.
+  const maxRound = Math.max(
+    1,
+    ...roundsMeta.map(m => m.round),
+    ...threads.flatMap(t => t.rounds.map(r => r.round))
+  );
+  const roundNums = [];
+  for (let r = 1; r <= maxRound; r++) roundNums.push(r);
+
+  /* ===== Cover ===== */
+  const cover = wb.addWorksheet('Cover', { views: [{ showGridLines: false }] });
+  cover.columns = [
+    { width: 4  },  // A: left gutter
+    { width: 32 },  // B: labels
+    { width: 50 },  // C: values
+    { width: 6  },  // D: right margin
+  ];
+
+  // Brand palette
+  const BEIGE       = 'FFFAF6EE';  // soft cream-beige card background
+  const LILLY_RED   = 'FFE1241B';  // brand red
+  const INK_PRIMARY = 'FF1A1A1A';
+  const INK_SECOND  = 'FF5C5C5C';
+  const INK_MUTED   = 'FF8E8E8E';
+  const FOREST      = 'FF2A4D3E';  // section headers — matches Summary header
+
+  // Paint the card region in beige (rows 1–38, cols A–D)
+  for (let rr = 1; rr <= 38; rr++) {
+    for (let cc = 1; cc <= 4; cc++) {
+      cover.getCell(rr, cc).fill = {
+        type: 'pattern', pattern: 'solid', fgColor: { argb: BEIGE }
+      };
+    }
+  }
+
+  // Row 1: top padding
+  cover.getRow(1).height = 18;
+
+  // Row 2: eyebrow
+  cover.mergeCells('B2:C2');
+  cover.getCell('B2').value = 'CLINICAL TRANSLATION REVIEW WORKFLOW';
+  cover.getCell('B2').font = { name: 'Calibri', bold: true, size: 9, color: { argb: INK_MUTED } };
+  cover.getCell('B2').alignment = { vertical: 'middle' };
+  cover.getRow(2).height = 18;
+
+  // Row 3: main title — Lilly red, Cambria italic (closest universally-available
+  // serif italic to the in-app Instrument Serif look)
+  cover.mergeCells('B3:C3');
+  cover.getCell('B3').value = 'Lilly eCOA-RWS Comment Extractor';
+  cover.getCell('B3').font = { name: 'Cambria', italic: true, size: 28, color: { argb: LILLY_RED } };
+  cover.getCell('B3').alignment = { vertical: 'middle' };
+  cover.getRow(3).height = 46;
+
+  // Row 4: subtitle
+  cover.mergeCells('B4:C4');
+  cover.getCell('B4').value = 'Reviewer comments — unified workbook';
+  cover.getCell('B4').font = { name: 'Calibri', italic: true, size: 12, color: { argb: INK_SECOND } };
+  cover.getCell('B4').alignment = { vertical: 'middle' };
+  cover.getRow(4).height = 22;
+
+  // Row 5: thin red accent rule between title block and content
+  cover.getRow(5).height = 12;
+  cover.getCell('B5').border = { top: { style: 'medium', color: { argb: LILLY_RED } } };
+  cover.getCell('C5').border = { top: { style: 'medium', color: { argb: LILLY_RED } } };
+
+  // Row 7: section header — "At a glance"
+  cover.getCell('B7').value = 'AT A GLANCE';
+  cover.getCell('B7').font = { name: 'Calibri', bold: true, size: 10, color: { argb: FOREST } };
+  cover.getRow(7).height = 20;
+
+  // Rows 8–11: stats
+  const lateCount = threads.filter(t => t.flag_late).length;
+  const stats = [
+    ['Generated',            new Date().toLocaleString()],
+    ['Total threads',        threads.length],
+    ['Languages',            new Set(threads.map(t => t.language_code)).size],
+    ['Late-flagged threads', lateCount],
+  ];
+  let coverRow = 8;
+  for (const [label, val] of stats) {
+    cover.getCell(`B${coverRow}`).value = label;
+    cover.getCell(`B${coverRow}`).font = { name: 'Calibri', size: 11, color: { argb: INK_SECOND } };
+    cover.getCell(`C${coverRow}`).value = val;
+    const isLateRow = (label === 'Late-flagged threads' && Number(val) > 0);
+    cover.getCell(`C${coverRow}`).font = {
+      name: 'Calibri', size: 11, bold: true,
+      color: { argb: isLateRow ? LILLY_RED : INK_PRIMARY }
+    };
+    cover.getRow(coverRow).height = 19;
+    coverRow++;
+  }
+
+  // Spacer + Rounds section
+  coverRow++;  // visual gap
+  cover.getCell(`B${coverRow}`).value = 'ROUNDS IN THIS WORKBOOK';
+  cover.getCell(`B${coverRow}`).font = { name: 'Calibri', bold: true, size: 10, color: { argb: FOREST } };
+  cover.getRow(coverRow).height = 20;
+  coverRow++;
+  for (const m of roundsMeta) {
+    cover.getCell(`B${coverRow}`).value = `Round ${m.round}`;
+    cover.getCell(`B${coverRow}`).font = { name: 'Calibri', bold: true, size: 11, color: { argb: INK_PRIMARY } };
+    cover.getCell(`C${coverRow}`).value = `${m.date}  ·  ${m.zipName || ''}`;
+    cover.getCell(`C${coverRow}`).font = { name: 'Calibri', size: 11, color: { argb: INK_SECOND } };
+    cover.getRow(coverRow).height = 19;
+    coverRow++;
+  }
+
+  // Footer (pinned near the bottom of the card)
+  const footerRow = 36;
+  cover.mergeCells(`B${footerRow}:C${footerRow}`);
+  cover.getCell(`B${footerRow}`).value = 'Company Confidential  ·  © 2026 Eli Lilly and Company';
+  cover.getCell(`B${footerRow}`).font = { name: 'Calibri', italic: true, size: 9, color: { argb: INK_MUTED } };
+  cover.getCell(`B${footerRow}`).alignment = { vertical: 'middle' };
+  cover.getCell(`B${footerRow}`).border = { top: { style: 'thin', color: { argb: 'FFE6DFCF' } } };
+  cover.getRow(footerRow).height = 18;
+
+  /* ===== Summary ===== */
+  const sum = wb.addWorksheet('Summary', { views: [{ state: 'frozen', ySplit: 1 }] });
+  const sumCols = [
+    { header: 'Language', key: 'lang', width: 22 },
+    { header: 'Folder',   key: 'folder', width: 22 },
+    { header: 'Scale',    key: 'scale', width: 28 },
+    { header: 'PDF File', key: 'pdf', width: 48 },
+  ];
+  for (const r of roundNums) sumCols.push({ header: `R${r} Comments`, key: `r${r}`, width: 13 });
+  sumCols.push({ header: 'Total', key: 'total', width: 9 });
+  sumCols.push({ header: 'Issues not identified in round 1', key: 'flag', width: 30 });
+  sum.columns = sumCols;
+  styleHeaderRow(sum.getRow(1));
+  sum.getRow(1).height = 26;
+
+  const aggMap = new Map();
+  for (const t of threads) {
+    const key = [t.language_code, t.language_folder, t.scale, t.pdf_filename].join('||');
+    if (!aggMap.has(key)) {
+      aggMap.set(key, {
+        lang: languageDisplay(t.language_code, t.language_folder),
+        folder: t.language_folder, scale: t.scale, pdf: t.pdf_filename,
+        byRound: {}, lateCount: 0,
+      });
+    }
+    const e = aggMap.get(key);
+    for (const rd of t.rounds) e.byRound[rd.round] = (e.byRound[rd.round] || 0) + 1;
+    if (t.flag_late) e.lateCount++;
+  }
+  const sortedAgg = [...aggMap.values()].sort((a, b) =>
+    a.lang.localeCompare(b.lang) || a.scale.localeCompare(b.scale) || a.pdf.localeCompare(b.pdf)
+  );
+  let sumRowIdx = 2;
+  for (const a of sortedAgg) {
+    const total = Object.values(a.byRound).reduce((s, n) => s + n, 0);
+    const vals = {
+      lang: a.lang, folder: a.folder, scale: a.scale, pdf: a.pdf,
+      total,
+      flag: a.lateCount > 0 ? `${a.lateCount}` : '—',
+    };
+    for (const r of roundNums) vals[`r${r}`] = a.byRound[r] || 0;
+    sum.getRow(sumRowIdx).values = vals;
+    styleBodyRow(sum.getRow(sumRowIdx), sumRowIdx);
+    if (a.lateCount > 0) {
+      const cell = sum.getRow(sumRowIdx).getCell('flag');
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCE4E4' } };
+      cell.font = { name: 'Arial', size: 10, color: { argb: 'FFB52525' }, bold: true };
+    }
+    sumRowIdx++;
+  }
+  if (sumRowIdx > 2) {
+    sum.autoFilter = {
+      from: { row: 1, column: 1 },
+      to:   { row: sumRowIdx - 1, column: sumCols.length },
+    };
+  }
+
+  /* ===== Scope tab =====
+   *
+   * Created when source-files data is available. Each row is one (scale,
+   * language) combination across the eCOA screens sent to RWS and the
+   * comments received back. Columns surface where the scale was sent (per
+   * round) and what came back as comments, so you can audit:
+   *   • Sent but never commented → review may still be pending
+   *   • Commented but never sent → unusual, worth investigating
+   */
+  const hasHop = hopByRound && Object.keys(hopByRound).length > 0;
+  if (hasHop) {
+    const scope = wb.addWorksheet('Scope', { views: [{ state: 'frozen', ySplit: 1 }] });
+    const scopeCols = [
+      { header: 'Scale',    key: 'scale',    width: 28 },
+      { header: 'Language', key: 'language', width: 22 },
+    ];
+    for (const r of roundNums) {
+      scopeCols.push({ header: `R${r} in source files sent to RWS`, key: `r${r}hop`, width: 22 });
+      scopeCols.push({ header: `R${r} comments from RWS`,           key: `r${r}cm`,  width: 18 });
+    }
+    scopeCols.push({ header: 'Note', key: 'note', width: 46 });
+    scope.columns = scopeCols;
+    styleHeaderRow(scope.getRow(1));
+    scope.getRow(1).height = 26;
+
+    // Collect every (scale, language) pair seen in any submitted-screens batch,
+    // plus pairs that received comments but were never sent.
+    const pairs = new Map();
+    function getPair(scale, language) {
+      const key = `${scale}||${language}`;
+      if (!pairs.has(key)) {
+        pairs.set(key, { scale, language, hopRounds: new Set(), commentCountsByRound: {} });
+      }
+      return pairs.get(key);
+    }
+    for (const [roundStr, entries] of Object.entries(hopByRound)) {
+      const round = Number(roundStr);
+      for (const e of entries) {
+        const lang = e.language === '*' ? '(any language)' : languageDisplay(e.language, '');
+        const pair = getPair(e.scale, lang);
+        pair.hopRounds.add(round);
+      }
+    }
+    for (const t of threads) {
+      const lang = languageDisplay(t.language_code, t.language_folder);
+      const pair = getPair(t.scale, lang);
+      for (const rd of t.rounds) {
+        pair.commentCountsByRound[rd.round] = (pair.commentCountsByRound[rd.round] || 0) + 1;
+      }
+    }
+
+    // Pre-compute two indices needed to avoid false "never sent" warnings:
+    //   1) submittedScales — every scale that appeared in screens, in any
+    //      round, in any language. Used to gate the "never sent" warning:
+    //      if the scale is in the screens at all, we don't claim it wasn't.
+    //   2) agnosticByScale — for each scale, the rounds where it was sent
+    //      at the language-agnostic level (files at the zip root, no lang
+    //      folder). An agnostic submission means "this English master is
+    //      the source for ALL languages", so every language-specific row
+    //      for that scale inherits those rounds.
+    const submittedScales = new Set();
+    const agnosticByScale = new Map();
+    for (const [roundStr, entries] of Object.entries(hopByRound)) {
+      const round = Number(roundStr);
+      for (const e of entries) {
+        const key = (e.scale || '').toLowerCase();
+        if (!key) continue;
+        submittedScales.add(key);
+        if (e.language === '*') {
+          if (!agnosticByScale.has(key)) agnosticByScale.set(key, new Set());
+          agnosticByScale.get(key).add(round);
+        }
+      }
+    }
+
+    const sortedPairs = [...pairs.values()].sort((a, b) =>
+      a.scale.localeCompare(b.scale) || a.language.localeCompare(b.language)
+    );
+    let scopeIdx = 2;
+    for (const p of sortedPairs) {
+      const scaleKey = (p.scale || '').toLowerCase();
+      // Effective rounds where this (scale, language) was covered by a
+      // screens submission. Specific-language rows inherit agnostic rounds.
+      const inherited = (p.language === '(any language)')
+        ? new Set()
+        : (agnosticByScale.get(scaleKey) || new Set());
+      const effectiveHopRounds = new Set([...p.hopRounds, ...inherited]);
+      const totalHop = effectiveHopRounds.size;
+      const totalComments = Object.values(p.commentCountsByRound).reduce((a, b) => a + b, 0);
+      const scaleEverSubmitted = submittedScales.has(scaleKey);
+
+      let note = '';
+      if (totalComments > 0 && !scaleEverSubmitted) {
+        // Only warn when the scale appears NOWHERE in any screens batch.
+        note = '⚠ Comments received but screens never sent';
+      } else if (totalHop > 0 && totalComments === 0) {
+        note = 'Sent, no comments yet';
+      } else if (totalHop > 0 && totalComments > 0) {
+        let dev_miss = false;
+        for (const [r, count] of Object.entries(p.commentCountsByRound)) {
+          const round = Number(r);
+          const seenInHop = [...effectiveHopRounds].some(hr => hr <= round);
+          if (!seenInHop && count > 0) { dev_miss = true; break; }
+        }
+        if (dev_miss) note = '⚠ Comments arrived before screens were sent';
+      }
+      // Note: if totalHop === 0 && totalComments > 0 && scaleEverSubmitted
+      // (scale was sent for a DIFFERENT language than this row's language),
+      // we leave the note blank — the user's rule is that any submission of
+      // the scale, in any language, counts as "sent".
+
+      const vals = {
+        scale: p.scale,
+        language: p.language,
+        note,
+      };
+      for (const r of roundNums) {
+        vals[`r${r}hop`] = effectiveHopRounds.has(r) ? '✓' : '';
+        vals[`r${r}cm`]  = p.commentCountsByRound[r] || '';
+      }
+      scope.getRow(scopeIdx).values = vals;
+      styleBodyRow(scope.getRow(scopeIdx), scopeIdx);
+      if (note.startsWith('⚠')) {
+        const c = scope.getRow(scopeIdx).getCell('note');
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCEEDD' } };
+        c.font = { name: 'Arial', size: 10, color: { argb: 'FF8A5C00' }, bold: true };
+      }
+      // Centre the ✓ marks and counts
+      for (const r of roundNums) {
+        scope.getRow(scopeIdx).getCell(`r${r}hop`).alignment =
+          { horizontal: 'center', vertical: 'middle' };
+        scope.getRow(scopeIdx).getCell(`r${r}cm`).alignment =
+          { horizontal: 'center', vertical: 'middle' };
+      }
+      scopeIdx++;
+    }
+    if (scopeIdx > 2) {
+      scope.autoFilter = {
+        from: { row: 1, column: 1 },
+        to:   { row: scopeIdx - 1, column: scopeCols.length },
+      };
+    }
+  }
+
+  /* ===== Per-language sheets =====
+   *
+   * Column layout (depends on number of rounds):
+   *   # | PDF File | Scale | Page
+   *   | Round 1 — Linguist Comment | Round 1 — RWS Reply
+   *   [ | Round 2 — Linguist Comment | Round 2 — RWS Reply ... up to Round N ]
+   *   | Screenshot | Status | Done
+   *
+   * "Comments" column at the right: blank for normal rows; red fill with the
+   * label "Not identified by RWS in the previous round" for late comments
+   * (new comments in round 2 or later that weren't matched to a prior round).
+   *
+   * Tab color is green when this language has no comments in the latest round
+   * (only applied when workbook contains more than one round).
+   *
+   * maxRound is already in scope from the top of buildWorkbook, so we just
+   * reuse it here without re-declaring.
+   */
+
+  const byLang = new Map();
+  for (const t of threads) {
+    if (!byLang.has(t.language_code)) byLang.set(t.language_code, []);
+    byLang.get(t.language_code).push(t);
+  }
+  const sortedLangs = [...byLang.keys()].sort();
+  const usedNames = new Set(['Cover', 'Summary', '__data']);
+
+  for (const langCode of sortedLangs) {
+    const langThreads = byLang.get(langCode);
+    // Use friendly display name for the tab (e.g. "Czech - CZ" instead of "CZ")
+    const folderForLang = langThreads[0]?.language_folder || '';
+    const displayName = languageDisplay(langCode, folderForLang);
+    const sheetName = safeSheetName(displayName, usedNames);
+    const ws = wb.addWorksheet(sheetName, { views: [{ state: 'frozen', ySplit: 1, xSplit: 4 }] });
+
+    const cols = [
+      { header: '#',         key: 'i',      width: 5 },
+      { header: 'PDF File',  key: 'pdf',    width: 38 },
+      { header: 'Scale',     key: 'scale',  width: 22 },
+      { header: 'Page',      key: 'page',   width: 6 },
+    ];
+    for (const r of roundNums) {
+      cols.push({ header: `Round ${r} — Linguist Comment`, key: `r${r}c`, width: 40 });
+      cols.push({ header: `Round ${r} — RWS Reply`,        key: `r${r}r`, width: 40 });
+    }
+    cols.push({ header: 'Screenshot', key: 'img',      width: 78 });
+    cols.push({ header: 'Comments',   key: 'comments', width: 30 });
+    ws.columns = cols;
+    styleHeaderRow(ws.getRow(1));
+    ws.getRow(1).height = 30;
+
+    // Sort:
+    //   1) flag_late = false rows first, then flag_late = true rows (late
+    //      comments grouped at the bottom of each language tab)
+    //   2) Within each group: by (pdf_filename, scale, page, rect-y)
+    // Compare pages that may be strings (when a PDF uses page labels like
+    // "i", "ii", "A-1") or numbers — numeric compare when both parse as
+    // numbers, lexicographic otherwise.
+    const cmpPage = (a, b) => {
+      const an = parseInt(a, 10), bn = parseInt(b, 10);
+      if (!isNaN(an) && !isNaN(bn) && an !== bn) return an - bn;
+      return String(a).localeCompare(String(b));
+    };
+    langThreads.sort((a, b) =>
+      ((a.flag_late ? 1 : 0) - (b.flag_late ? 1 : 0)) ||
+      a.pdf_filename.localeCompare(b.pdf_filename) ||
+      a.scale.localeCompare(b.scale) ||
+      cmpPage(a.page, b.page) ||
+      ((b.rect[3] - a.rect[3]) || 0)
+    );
+
+    const imgColIdx = cols.findIndex(c => c.key === 'img');
+
+    let i = 0;
+    for (const t of langThreads) {
+      i++;
+      const rowIdx = i + 1;
+      const xlRow = ws.getRow(rowIdx);
+
+      const isLate = !!t.flag_late;
+      // Single neutral label for all late comments. The root-cause data
+      // (rws_missed / dev_missed / null) stays in __data for audit only —
+      // the human reviewer makes the final call on attribution.
+      const LATE_LABEL =
+        'This comment was not included in the previous round. ' +
+        'Please check whether it was missed by ATOM5 or the RWS team.';
+
+      const vals = {
+        i, pdf: t.pdf_filename, scale: t.scale, page: t.page,
+      };
+      for (const r of roundNums) {
+        const rd = t.rounds.find(rr => rr.round === r);
+        vals[`r${r}c`] = rd ? rd.original : '';
+        vals[`r${r}r`] = rd ? rd.reply : '';
+      }
+      vals.comments = isLate ? LATE_LABEL : '';
+      xlRow.values = vals;
+      styleBodyRow(xlRow, rowIdx);
+
+      // Late comment styling: one consistent red treatment.
+      if (isLate) {
+        const target = xlRow.getCell(`r${t.first_seen_round}c`);
+        const c = xlRow.getCell('comments');
+        target.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFBE2E2' } };
+        target.font = { name: 'Arial', size: 10, color: { argb: 'FFB52525' } };
+        target.border = thinBorder('FFE7B3B3');
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFB52525' } };
+        c.font = { name: 'Arial', size: 10, color: { argb: 'FFFFFFFF' }, bold: true };
+        c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      } else {
+        // Normal rows: leave Comments cell blank with a quiet, centered style
+        xlRow.getCell('comments').alignment = {
+          horizontal: 'center', vertical: 'middle', wrapText: true,
+        };
+      }
+
+      // Embed screenshot — full page at proportional aspect.
+      // The underlying PNG is up to 1600 px wide, so the image stays crisp
+      // when the user zooms into the cell in Excel. The displayed cell size
+      // is capped at MAX_W × MAX_H so rows don't become unmanageably tall.
+      if (t.screenshot) {
+        try {
+          const imageId = wb.addImage({ buffer: t.screenshot, extension: 'png' });
+          // Default to the legacy aspect if older workbook data lacks it.
+          const aspect = t.screenshot_aspect || (500 / 220);
+          const MAX_W = 540;  // ~Screenshot column width in pixels
+          const MAX_H = 480;  // tall enough to read but lets >1 row fit on screen
+          let embedW, embedH;
+          if (aspect >= 1) {
+            // Landscape / square: width-bound first
+            embedW = MAX_W;
+            embedH = embedW / aspect;
+            if (embedH > MAX_H) { embedH = MAX_H; embedW = embedH * aspect; }
+          } else {
+            // Portrait: height-bound first
+            embedH = MAX_H;
+            embedW = embedH * aspect;
+            if (embedW > MAX_W) { embedW = MAX_W; embedH = embedW / aspect; }
+          }
+          embedW = Math.round(embedW);
+          embedH = Math.round(embedH);
+          ws.addImage(imageId, {
+            tl: { col: imgColIdx, row: rowIdx - 1 },
+            ext: { width: embedW, height: embedH },
+          });
+          // Row height in points. 1pt ≈ 1.333 px at 96 DPI; add a few points
+          // of breathing room so the image isn't clipped at the bottom.
+          xlRow.height = Math.min(409, Math.round(embedH * 0.75) + 6);
+        } catch (e) {
+          xlRow.getCell('img').value = '(image error)';
+        }
+      }
+    }
+
+    if (i > 0) {
+      ws.autoFilter = {
+        from: { row: 1, column: 1 },
+        to:   { row: i + 1, column: cols.length },
+      };
+    }
+
+    // Green tab: this language has no comments in the latest round
+    // (only when workbook has more than one round — for R1 alone this would
+    // always be misleading).
+    if (maxRound > 1) {
+      const hasCurrentRound = langThreads.some(t =>
+        t.rounds.some(r => r.round === maxRound)
+      );
+      if (!hasCurrentRound) {
+        ws.properties.tabColor = { argb: 'FF22C55E' };  // green
+      }
+    }
+  }
+
+  /* ===== __data sheet (round persistence) =====
+   *
+   * v5 schema additions:
+   *   - hopByRound:        {round → [{language, scale, filename}]} from each round's HOP zip
+   *   - late_root_cause:   per-thread ('rws_missed' | 'dev_missed' | null)
+   *
+   * v7 removed the initialSource field that was introduced in v6 — the tool
+   * no longer reads initial English source files. Older v6 workbooks that
+   * include the field load cleanly; the field is simply ignored on read.
+   */
+  const dataPayload = {
+    version: 7,
+    roundsMeta,
+    hopByRound: hopByRound || {},
+    threads: threads.map(t => ({
+      language_folder: t.language_folder,
+      language_code: t.language_code,
+      scale: t.scale,
+      pdf_filename: t.pdf_filename,
+      page: t.page,
+      rect: t.rect,
+      first_seen_round: t.first_seen_round || (t.rounds[0]?.round ?? 1),
+      flag_late: !!t.flag_late,
+      late_root_cause: t.late_root_cause || null,
+      rounds: t.rounds.map(r => ({
+        round: r.round, original: r.original, reply: r.reply,
+        author: r.author, rect: r.rect,
+      })),
+      screenshot_b64: t.screenshot ? bytesToBase64(t.screenshot) : null,
+      screenshot_aspect: t.screenshot_aspect || null,
+    })),
+  };
+  const json = JSON.stringify(dataPayload);
+  const dataSheet = wb.addWorksheet('__data');
+  dataSheet.getCell('B1').value = 'DO NOT DELETE — tool-managed round history';
+  dataSheet.getCell('B1').font = { name: 'Calibri', bold: true, color: { argb: 'FFB52525' }, size: 11 };
+  const CHUNK = 30000;
+  let cIdx = 1;
+  for (let offset = 0; offset < json.length; offset += CHUNK) {
+    const cell = dataSheet.getCell(`A${cIdx}`);
+    cell.value = json.slice(offset, offset + CHUNK);
+    cell.font = { name: 'Calibri', size: 8, color: { argb: 'FF999999' } };
+    cIdx++;
+  }
+  dataSheet.getColumn('A').width = 60;
+  dataSheet.getColumn('A').hidden = true;
+  dataSheet.getColumn('B').width = 80;
+  try { dataSheet.state = 'hidden'; } catch (e) {}
+
+  const buf = await wb.xlsx.writeBuffer();
+  return new Blob([buf], {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
+}
+
+// ============================================================
+// Helpers
+// ============================================================
+function bytesToBase64(bytes) {
+  let bin = '';
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+function safeSheetName(name, used) {
+  let cleaned = name.replace(/[:\\\/\?\*\[\]]/g, '_').trim().slice(0, 31) || 'Sheet';
+  let base = cleaned, n = 2;
+  while (used.has(cleaned)) {
+    const suffix = ` (${n})`;
+    cleaned = base.slice(0, 31 - suffix.length) + suffix;
+    n++;
+  }
+  used.add(cleaned);
+  return cleaned;
+}
+// Excel column letter from zero-based index: 0→A, 1→B ... 26→AA, 27→AB ...
+function colLetter(zeroBasedIdx) {
+  let s = '', n = zeroBasedIdx;
+  do { s = String.fromCharCode(65 + (n % 26)) + s; n = Math.floor(n / 26) - 1; } while (n >= 0);
+  return s;
+}
+function thinBorder(argb) {
+  const s = { style: 'thin', color: { argb } };
+  return { top: s, left: s, bottom: s, right: s };
+}
+function styleHeaderRow(row) {
+  row.eachCell({ includeEmpty: true }, c => {
+    c.font = { name: 'Arial', size: 11, bold: true, color: { argb: 'FFFFFFFF' } };
+    c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF2A2A2D' } };
+    c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+    c.border = thinBorder('FF1A1A1A');
+  });
+}
+function styleBodyRow(row, rowIdx) {
+  const altFill = (rowIdx % 2 === 0)
+    ? { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8F7F2' } } : null;
+  row.eachCell({ includeEmpty: true }, c => {
+    c.font = { name: 'Arial', size: 10 };
+    c.alignment = { wrapText: true, vertical: 'top', horizontal: 'left' };
+    if (altFill) c.fill = altFill;
+    c.border = thinBorder('FFE4E2D9');
+  });
+}
+
+// ============================================================
+// Result panel
+// ============================================================
+function showResult({ threads, roundsMeta, newComments, matchedToPrior, lateFlags }) {
+  resultTitle.innerHTML = `Round <em>${currentRound}</em> processed.`;
+  resultSub.textContent = outName;
+
+  roundsDisplay.innerHTML = '';
+  for (const m of roundsMeta) {
+    const el = document.createElement('span');
+    el.className = `round-badge r${m.round}`;
+    el.innerHTML = `<span class="dot"></span><b>Round ${m.round}</b> · ${m.date}`;
+    roundsDisplay.appendChild(el);
+  }
+
+  const totalComments = threads.reduce((s, t) => s + t.rounds.length, 0);
+  // Differentiate qb-PRO screenshots (mobile app screen captures) from other
+  // PDFs (scale assessments). The user's workflow treats these distinctly:
+  // "screenshots" = qb-PRO files only, "scales" = everything else.
+  const isQbPro = (name) => /^qb[-_\s]?pro/i.test(String(name || '').trim());
+  const screenshotThreads = threads.filter(t => isQbPro(t.pdf_filename)).length;
+  const scaleThreads = threads.length - screenshotThreads;
+
+  statsEl.innerHTML = `
+    <div class="stat"><div class="stat-num">${threads.length}</div><div class="stat-label">Threads</div></div>
+    <div class="stat"><div class="stat-num">${totalComments}</div><div class="stat-label">Comments total</div></div>
+    <div class="stat"><div class="stat-num">${newComments + matchedToPrior}</div><div class="stat-label">This round</div></div>
+    <div class="stat"><div class="stat-num">${matchedToPrior}</div><div class="stat-label">Matched to prior</div></div>
+    <div class="stat"><div class="stat-num ${lateFlags > 0 ? 'flag' : ''}">${lateFlags}</div><div class="stat-label">Flagged late</div></div>
+    <div class="stat"><div class="stat-num">${screenshotThreads}</div><div class="stat-label">Screenshots&nbsp;(qb-PRO)</div></div>
+    <div class="stat"><div class="stat-num">${scaleThreads}</div><div class="stat-label">Scales (other PDFs)</div></div>
+  `;
+
+  result.classList.add('active');
+  log(`Workbook ready: ${threads.length} threads, ${totalComments} comments total.`, 'ok');
+  progressTitle.innerHTML = 'Done';
+  result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+refreshRoundUI();
+</script>
+
+</body>
+</html>
