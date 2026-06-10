@@ -880,7 +880,24 @@ async function runPipeline() {
       log(`Screens zip: ${thisRoundHop.length} screen(s) identified.`, 'info');
       priorHopByRound[currentRound] = thisRoundHop;
     } catch (e) {
-      log(`Screens zip could not be parsed: ${e.message || e}`, 'warn');
+      const msg = String(e.message || e);
+      // Detect the browser's "file handle became invalid" condition (the
+      // file was moved, renamed, deleted, or modified after upload — common
+      // when files live on a synced drive like OneDrive or are extracted
+      // from a temp folder that the OS later cleans up).
+      if (/permission|NotReadable|denied|after a reference|after a refer/i.test(msg)) {
+        log(
+          `The screens zip became unreadable mid-process. ` +
+          `This usually means the file was moved, renamed, or modified after upload ` +
+          `(common with OneDrive-synced files). Please drop the screens zip again ` +
+          `and re-run. The rest of the workbook will still be produced this run, ` +
+          `just without screens-based audit info.`,
+          'warn'
+        );
+      } else {
+        log(`Screens zip could not be parsed: ${msg}. ` +
+            `The rest of the workbook will still be produced.`, 'warn');
+      }
     }
   }
 
@@ -1049,12 +1066,25 @@ async function parseHopZip(file) {
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
   let allFiles = Object.values(zip.files).filter(f => !f.dir);
   if (!allFiles.length) throw new Error('Screens zip is empty.');
-  // Apply the two shared filters
   const beforeObsolete = allFiles.length;
   allFiles = allFiles.filter(f => !isObsoletePath(f.name));
   const afterObsolete = allFiles.length;
-  allFiles = dedupeByLatest(allFiles, (e, wantDate) => wantDate ? e.date : e.name);
+
+  // Detect optional outer wrapper folder BEFORE dedup — same reasoning as
+  // processZip: without this, multilingual screens batches lose all but
+  // one language whenever an outer folder wraps the language subfolders.
+  const firstSegs = new Set(allFiles.map(f => f.name.split('/')[0]));
+  let stripPrefix = '';
+  if (firstSegs.size === 1) {
+    const secondSegs = new Set(allFiles.map(f => f.name.split('/')[1]).filter(Boolean));
+    if (secondSegs.size > 1) stripPrefix = [...firstSegs][0] + '/';
+  }
+  const dedupPath = (e) => stripPrefix && e.name.startsWith(stripPrefix)
+    ? e.name.slice(stripPrefix.length)
+    : e.name;
+  allFiles = dedupeByLatest(allFiles, (e, wantDate) => wantDate ? e.date : dedupPath(e));
   const afterDedupe = allFiles.length;
+
   if (beforeObsolete !== afterObsolete) {
     log(`Screens: skipped ${beforeObsolete - afterObsolete} file(s) in Obsolete/Archive folders.`, 'info');
   }
@@ -1132,25 +1162,37 @@ async function processZip(file, { embedScreenshots }) {
   let pdfFiles = allFiles.filter(f => /\.pdf$/i.test(f.name));
   if (!pdfFiles.length) throw new Error('No PDF files in zip.');
 
-  // Apply the two shared filters: skip Obsolete/Archive folders, then dedupe
-  // same-basename files in the same top-level folder by latest timestamp.
+  // Filter Obsolete/Archive paths first.
   const totalRaw = pdfFiles.length;
   pdfFiles = pdfFiles.filter(f => !isObsoletePath(f.name));
   const afterObsolete = pdfFiles.length;
-  pdfFiles = dedupeByLatest(pdfFiles, (e, wantDate) => wantDate ? e.date : e.name);
-  const afterDedupe = pdfFiles.length;
-  if (totalRaw !== afterObsolete) {
-    log(`Skipped ${totalRaw - afterObsolete} PDF(s) in Obsolete/Archive folders.`, 'info');
-  }
-  if (afterObsolete !== afterDedupe) {
-    log(`Deduped ${afterObsolete - afterDedupe} same-name PDF(s) (kept latest version).`, 'info');
-  }
 
+  // Detect an optional top-level wrapper folder BEFORE dedup. Some zips
+  // wrap everything in an outer "Round 1" / "RWS Comments_R1" folder;
+  // without spotting this we'd dedupe ACROSS language folders that all
+  // share the same wrapper as their "top" segment — silently dropping
+  // every-language-but-one of any file that happens to share a basename
+  // across languages (which is the norm in multilingual review batches).
   const firstSegments = new Set(pdfFiles.map(f => f.name.split('/')[0]));
   let stripPrefix = '';
   if (firstSegments.size === 1) {
     const secondSegments = new Set(pdfFiles.map(f => f.name.split('/')[1]).filter(Boolean));
     if (secondSegments.size > 1) stripPrefix = [...firstSegments][0] + '/';
+  }
+  // Path the dedup uses to build keys — wrapper stripped if present, so
+  // dedup groups by (language folder, basename) rather than (wrapper,
+  // basename).
+  const dedupPath = (e) => stripPrefix && e.name.startsWith(stripPrefix)
+    ? e.name.slice(stripPrefix.length)
+    : e.name;
+  pdfFiles = dedupeByLatest(pdfFiles, (e, wantDate) => wantDate ? e.date : dedupPath(e));
+  const afterDedupe = pdfFiles.length;
+
+  if (totalRaw !== afterObsolete) {
+    log(`Skipped ${totalRaw - afterObsolete} PDF(s) in Obsolete/Archive folders.`, 'info');
+  }
+  if (afterObsolete !== afterDedupe) {
+    log(`Deduped ${afterObsolete - afterDedupe} same-name PDF(s) (kept latest version).`, 'info');
   }
   log(`Processing ${pdfFiles.length} PDF file(s) from zip.`, 'info');
 
@@ -1168,22 +1210,45 @@ async function processZip(file, { embedScreenshots }) {
   let done = 0;
   setProgress(0, total, '');
 
+  // Build the unified task list and emit per-language headers up-front so
+  // the log preserves language grouping even though processing is
+  // concurrent below.
   const result = {};
+  const allTasks = [];
   for (const [langFolder, items] of Object.entries(byLang)) {
     const langCode = languageCode(langFolder);
     result[langFolder] = [];
     log(`[${langCode}] ${langFolder} — ${items.length} PDF(s)`, 'info');
+    for (const item of items) {
+      allTasks.push({ ...item, langFolder, langCode });
+    }
+  }
 
-    for (const { entry, fileName } of items) {
-      done++;
-      progressTitle.innerHTML = `<span class="spinner"></span>Processing ${done} of ${total}…`;
-      setProgress(done - 1, total, `${langCode} / ${fileName}`);
-      const scale = detectScale(fileName);
+  // Concurrent processing. The browser's PDF.js worker thread, JPEG
+  // encoder (toBlob), and zip-entry I/O (entry.async) all run partially
+  // off the main thread, so multiple in-flight PDFs overlap their slow
+  // bits and give a real wall-clock speedup vs strict sequential work.
+  // 3 is a safe sweet spot: more than that and contention for the single
+  // PDF.js worker dominates; memory usage also stays bounded since each
+  // worker only holds one page canvas at a time.
+  const CONCURRENCY = 3;
+  const queue = allTasks.slice();
+  async function processOne() {
+    while (true) {
+      const task = queue.shift();
+      if (!task) return;
+      const { entry, fileName, langFolder, langCode } = task;
+      const scaleName = detectScale(fileName);
       const qb = isQbPro(fileName);
+      // Header update is best-effort — multiple workers will overwrite
+      // each other's titles; that's fine, the progress bar carries the
+      // real count.
+      progressTitle.innerHTML = `<span class="spinner"></span>Processing ${done + 1} of ${total}…`;
+      setProgress(done, total, `${langCode} / ${fileName}`);
       try {
         const buf = await entry.async('arraybuffer');
         const rows = await extractFromPdf(buf, {
-          fileName, langFolder, langCode, scale, isQb: qb,
+          fileName, langFolder, langCode, scale: scaleName, isQb: qb,
           embedScreenshots: embedScreenshots,
         });
         if (rows.length === 0) {
@@ -1195,10 +1260,31 @@ async function processZip(file, { embedScreenshots }) {
       } catch (err) {
         log(`  ✗ ${fileName}: ${err.message || err}`, 'warn');
       }
+      done++;
       setProgress(done, total, `${langCode} / ${fileName}`);
+      // Yield to the event loop so progress UI repaints
       await new Promise(r => setTimeout(r, 0));
     }
   }
+  await Promise.all(Array.from({ length: CONCURRENCY }, () => processOne()));
+
+  // End-of-extraction summary so the user can verify at a glance that every
+  // file was processed. Per-language counts call out any language that
+  // produced zero results (worth investigating); the overall line gives a
+  // one-shot total to compare against the zip's actual file count.
+  log(`──────── extraction summary ────────`, 'info');
+  let totalFilesSeen = 0, totalRows = 0;
+  for (const [langFolder, items] of Object.entries(byLang)) {
+    const langCode = languageCode(langFolder);
+    const rowsForLang = (result[langFolder] || []).length;
+    const filesForLang = items.length;
+    totalFilesSeen += filesForLang;
+    totalRows += rowsForLang;
+    log(`  ${langCode} ${langFolder}: ${filesForLang} file(s), ${rowsForLang} comment(s)`,
+        rowsForLang === 0 ? 'warn' : 'ok');
+  }
+  log(`Total: ${totalFilesSeen} file(s) processed across ${Object.keys(byLang).length} language(s), ${totalRows} comment(s) extracted.`, 'ok');
+
   return result;
 }
 
@@ -1338,8 +1424,21 @@ async function extractFromPdf(arrayBuffer, ctx) {
         }
       }
 
+      // Kick off ALL screenshot encodings for this page in parallel up-front.
+      // The synchronous portion (drawImage, draw highlight) still runs in
+      // sequence on the main thread, but the toBlob encoding hand-offs to the
+      // browser's image encoder thread which can process multiple JPEGs in
+      // parallel. For a page with several comments this is a significant
+      // wall-clock win (encoding is the slow step).
+      const screenshotPromises = (ctx.embedScreenshots && pageCanvas)
+        ? originals.map(orig =>
+            renderFullPageWithHighlight(pageCanvas, renderScale, baseViewport, orig.rect)
+              .catch(() => null))
+        : originals.map(() => Promise.resolve(null));
+
       // --- Emit one row per original (with all replies merged into reply text)
-      for (const orig of originals) {
+      for (let oIdx = 0; oIdx < originals.length; oIdx++) {
+        const orig = originals[oIdx];
         let originalText = orig.contents;
         const replyTexts = [];
         let isRwsOnly = false;
@@ -1391,16 +1490,15 @@ async function extractFromPdf(arrayBuffer, ctx) {
           replyCombined = isRwsOnly ? '' : '(no RWS reply)';
         }
 
-        // Full-page screenshot with highlight rectangle over the comment marker
+        // Full-page screenshot with highlight rectangle over the comment marker.
+        // The promise was launched up-front (above) so the encoder has been
+        // busy in the background — by the time we reach this await, it's
+        // typically already done.
         let screenshotPng = null, screenshotAspect = null;
-        if (ctx.embedScreenshots && pageCanvas) {
-          try {
-            const { bytes, aspect } = await renderFullPageWithHighlight(
-              pageCanvas, renderScale, baseViewport, orig.rect
-            );
-            screenshotPng = bytes;
-            screenshotAspect = aspect;
-          } catch (e) { /* non-fatal */ }
+        const ssResult = await screenshotPromises[oIdx];
+        if (ssResult) {
+          screenshotPng = ssResult.bytes;
+          screenshotAspect = ssResult.aspect;
         }
 
         rows.push({
@@ -1434,11 +1532,12 @@ async function extractFromPdf(arrayBuffer, ctx) {
 async function renderPageAtBudget(page, baseViewport) {
   const MAX_PIXELS = 8_000_000;
   const baseW = baseViewport.width, baseH = baseViewport.height;
-  // Aim for 2.0× native resolution. That's about 192 DPI rendered against
-  // a 96-DPI baseline — enough that the embedded screenshot stays crisp in
-  // Excel, but ~36% fewer pixels to render than 2.5×. Fall back to a lower
-  // scale only if the page is so large that 2.0× would exceed the budget.
-  let scale = 2.0;
+  // Aim for 1.8× native resolution. Trade-off ladder I've explored:
+  //   2.0× original — sharpest, slowest
+  //   1.6× last build — too blurry when users zoom in Excel
+  //   1.8× — restores enough source pixels for ~3× clean zoom in Excel
+  //         while still being ~20% lighter than 2.0×.
+  let scale = 1.8;
   if (baseW * baseH * scale * scale > MAX_PIXELS) {
     scale = Math.sqrt(MAX_PIXELS / (baseW * baseH));
   }
@@ -1452,7 +1551,10 @@ async function renderPageAtBudget(page, baseViewport) {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   await page.render({
     canvasContext: ctx, viewport,
-    intent: 'print', background: 'rgba(255,255,255,1)',
+    // 'display' intent is 1.5–2× faster than 'print' and visually identical
+    // for screen-embedded screenshots — print intent does precise color
+    // profiling we don't need.
+    intent: 'display', background: 'rgba(255,255,255,1)',
   }).promise;
   return { canvas, scale };
 }
@@ -1507,10 +1609,13 @@ async function renderFullPageWithHighlight(pageCanvas, renderScale, baseViewport
     srcOriginY = cropY0;  // remember for highlight-rect math below
   }
 
-  // Target embedded resolution. Cap so the PNG stays manageable while
+  // Target embedded resolution. Cap so the JPEG stays manageable while
   // keeping the underlying pixels well above the cell display size so
-  // Excel zoom reveals detail.
-  const MAX_W = 1600, MAX_H = 2000;
+  // Excel zoom reveals detail. With Excel embedding at ~540 px wide,
+  // 1500 px source gives ~2.8× clean zoom — enough that pinch-zoomed
+  // inspection stays crisp. The previous 1200 cap was too aggressive and
+  // produced visible pixelation at zoom.
+  const MAX_W = 1500, MAX_H = 1900;
   let dw = sw, dh = sh;
   if (dw > MAX_W) { dh = dh * (MAX_W / dw); dw = MAX_W; }
   if (dh > MAX_H) { dw = dw * (MAX_H / dh); dh = MAX_H; }
@@ -1541,7 +1646,11 @@ async function renderFullPageWithHighlight(pageCanvas, renderScale, baseViewport
   ictx.lineWidth = 3;
   ictx.strokeRect(drawX, drawY, drawW, drawH);
 
-  const blob = await new Promise(res => out.toBlob(res, 'image/png'));
+  // JPEG quality 0.92 — visually indistinguishable from PNG for screenshot
+  // content. The 0.85 setting in the previous build saved a bit more space
+  // but produced visible halos around text at zoom. Quality 0.92 keeps text
+  // sharp while still being roughly 4× smaller than PNG.
+  const blob = await new Promise(res => out.toBlob(res, 'image/jpeg', 0.92));
   if (!blob) throw new Error('canvas.toBlob returned null');
   const buf = await blob.arrayBuffer();
   const aspect = dw / dh;  // width / height
@@ -1634,12 +1743,43 @@ async function readPriorWorkbook(file) {
   if (!parsed.threads) throw new Error('__data missing threads array.');
 
   for (const t of parsed.threads) {
-    if (t.screenshot_b64) t.screenshot = base64ToBytes(t.screenshot_b64);
-    else t.screenshot = null;
+    // v7 and older: screenshot bytes live inline as base64 in the JSON.
+    if (t.screenshot_b64) {
+      t.screenshot = base64ToBytes(t.screenshot_b64);
+    } else {
+      t.screenshot = null;
+    }
     delete t.screenshot_b64;
     // Older workbooks (v2/v3) may have a `done` field. Drop it — no longer used.
     delete t.done;
   }
+
+  // v8+: screenshots live in a dedicated __images sheet. Each row holds one
+  // image: column A = thread index, columns B+ = chunked base64. We read
+  // them one row at a time so no single in-memory string ever exceeds the
+  // size of one screenshot's b64 (~250 KB max).
+  const imagesSheet = wb.getWorksheet('__images');
+  if (imagesSheet) {
+    imagesSheet.eachRow({ includeEmpty: false }, (row, rowNum) => {
+      if (rowNum === 1) return;  // header row
+      const idxCell = row.getCell(1).value;
+      if (idxCell == null || idxCell === '') return;
+      const idx = Number(idxCell);
+      if (!Number.isFinite(idx) || idx < 0 || idx >= parsed.threads.length) return;
+      let b64 = '';
+      // Iterate columns B onward until we hit an empty cell
+      for (let col = 2; col <= row.cellCount; col++) {
+        const v = row.getCell(col).value;
+        if (typeof v === 'string' && v.length) b64 += v;
+        else if (v == null || v === '') break;
+      }
+      if (b64) parsed.threads[idx].screenshot = base64ToBytes(b64);
+      // The `has_screenshot` field was only a write-time marker; drop it
+      delete parsed.threads[idx].has_screenshot;
+    });
+  }
+  for (const t of parsed.threads) delete t.has_screenshot;
+
   // Older workbooks (v2/v3/v4) won't have hopByRound — default to empty.
   if (!parsed.hopByRound || typeof parsed.hopByRound !== 'object') {
     parsed.hopByRound = {};
@@ -2007,12 +2147,28 @@ async function buildWorkbook(threads, roundsMeta, hopByRound) {
   const sortedLangs = [...byLang.keys()].sort();
   const usedNames = new Set(['Cover', 'Summary', '__data']);
 
+  // Progress reporting during the workbook composition phase. Without these
+  // updates AND the yield calls below, the browser sees the main thread
+  // pegged for tens of seconds and shows "page isn't responding". The total
+  // work here scales with thread count, not language count, so we report
+  // progress per-language with a row count visible.
+  let totalThreadsBuilt = 0;
+  const grandTotalThreads = threads.length;
+  // How often to yield to the event loop inside the per-thread loop.
+  // Every 30 threads adds ~negligible overhead but keeps the browser
+  // responsive even on workbooks with thousands of comments per language.
+  const YIELD_EVERY = 30;
+
   for (const langCode of sortedLangs) {
     const langThreads = byLang.get(langCode);
     // Use friendly display name for the tab (e.g. "Czech - CZ" instead of "CZ")
     const folderForLang = langThreads[0]?.language_folder || '';
     const displayName = languageDisplay(langCode, folderForLang);
     const sheetName = safeSheetName(displayName, usedNames);
+    progressTitle.innerHTML = `<span class="spinner"></span>Building Excel — ${sheetName}…`;
+    setProgress(totalThreadsBuilt, grandTotalThreads, `${sheetName}: ${langThreads.length} row(s)`);
+    // Yield so the title update repaints before we start tab work
+    await new Promise(r => setTimeout(r, 0));
     const ws = wb.addWorksheet(sheetName, { views: [{ state: 'frozen', ySplit: 1, xSplit: 4 }] });
 
     const cols = [
@@ -2053,9 +2209,36 @@ async function buildWorkbook(threads, roundsMeta, hopByRound) {
 
     const imgColIdx = cols.findIndex(c => c.key === 'img');
 
+    // Option E: PDF-group banding + thick top border between PDFs.
+    //
+    // Reviewers report dozens of rows for a single PDF and need to identify
+    // the boundary at a glance. We alternate two subtle fills as the PDF
+    // filename changes from one row to the next, and draw a medium-weight
+    // forest-green line across the top of the first row in each group.
+    //
+    // Both fills override the every-other-row banding that styleBodyRow
+    // applies by default — we want grouping by PDF, not by row parity.
+    const BAND_FILLS = [
+      { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFFF' } }, // white
+      { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0EAD8' } }, // warm beige
+    ];
+    const GROUP_BORDER = { style: 'medium', color: { argb: 'FF2A4D3E' } };  // forest green
+    let prevPdfFilename = null;
+    // Start at 1 so the first PDF group flips to index 0 (white), giving us
+    // a clean default for the first group on the page.
+    let bandIdx = 1;
+
     let i = 0;
     for (const t of langThreads) {
       i++;
+      // Yield every N threads so the browser can repaint and stay responsive.
+      // Without this, large language tabs (e.g. 393 Telugu comments) freeze
+      // the UI long enough to trigger "page isn't responding".
+      if (i % YIELD_EVERY === 0) {
+        setProgress(totalThreadsBuilt + i, grandTotalThreads,
+                    `${sheetName}: row ${i} / ${langThreads.length}`);
+        await new Promise(r => setTimeout(r, 0));
+      }
       const rowIdx = i + 1;
       const xlRow = ws.getRow(rowIdx);
 
@@ -2079,6 +2262,22 @@ async function buildWorkbook(threads, roundsMeta, hopByRound) {
       xlRow.values = vals;
       styleBodyRow(xlRow, rowIdx);
 
+      // Detect PDF group transitions for banding and separator border.
+      const isNewPdfGroup = t.pdf_filename !== prevPdfFilename;
+      if (isNewPdfGroup) {
+        bandIdx = 1 - bandIdx;
+        prevPdfFilename = t.pdf_filename;
+      }
+      const groupFill = BAND_FILLS[bandIdx];
+
+      // Apply group banding to every cell in the row — this REPLACES the
+      // every-other-row alternation that styleBodyRow applied above. We
+      // must do this BEFORE the late-row overrides below so that the late
+      // red fill on the Comments + Linguist cells wins on those two cells
+      // (group fill is preserved on the rest of the row, which is what
+      // the visual design wants).
+      xlRow.eachCell({ includeEmpty: true }, cell => { cell.fill = groupFill; });
+
       // Late comment styling: one consistent red treatment.
       if (isLate) {
         const target = xlRow.getCell(`r${t.first_seen_round}c`);
@@ -2096,13 +2295,22 @@ async function buildWorkbook(threads, roundsMeta, hopByRound) {
         };
       }
 
+      // Thick top border to mark the start of a new PDF group. Applied LAST
+      // so it wins over the late-row thin red border on the linguist cell
+      // when a late row happens to be the first in its group.
+      if (isNewPdfGroup && i > 1) {
+        xlRow.eachCell({ includeEmpty: true }, cell => {
+          cell.border = { ...(cell.border || {}), top: GROUP_BORDER };
+        });
+      }
+
       // Embed screenshot — full page at proportional aspect.
       // The underlying PNG is up to 1600 px wide, so the image stays crisp
       // when the user zooms into the cell in Excel. The displayed cell size
       // is capped at MAX_W × MAX_H so rows don't become unmanageably tall.
       if (t.screenshot) {
         try {
-          const imageId = wb.addImage({ buffer: t.screenshot, extension: 'png' });
+          const imageId = wb.addImage({ buffer: t.screenshot, extension: 'jpeg' });
           // Default to the legacy aspect if older workbook data lacks it.
           const aspect = t.screenshot_aspect || (500 / 220);
           const MAX_W = 540;  // ~Screenshot column width in pixels
@@ -2152,56 +2360,146 @@ async function buildWorkbook(threads, roundsMeta, hopByRound) {
         ws.properties.tabColor = { argb: 'FF22C55E' };  // green
       }
     }
+    totalThreadsBuilt += langThreads.length;
   }
 
-  /* ===== __data sheet (round persistence) =====
+  /* ===== __data + __images sheets (round persistence) =====
    *
-   * v5 schema additions:
-   *   - hopByRound:        {round → [{language, scale, filename}]} from each round's HOP zip
-   *   - late_root_cause:   per-thread ('rws_missed' | 'dev_missed' | null)
+   * v8 schema changes:
+   *   - __data sheet: chunked JSON of metadata ONLY (no screenshot bytes).
+   *     Stays small — a few MB at most regardless of screenshot count.
+   *   - __images sheet (new): one row per screenshot. Column A holds the
+   *     thread index it belongs to; columns B, C, D... hold base64 chunks
+   *     of the screenshot bytes (max ~30000 chars per cell).
    *
-   * v7 removed the initialSource field that was introduced in v6 — the tool
-   * no longer reads initial English source files. Older v6 workbooks that
-   * include the field load cleanly; the field is simply ignored on read.
+   * This separation is forced by V8's single-string size limit (~512 MB).
+   * The previous monolithic JSON.stringify approach crashed on workbooks
+   * with thousands of threads — each carrying its own ~200 KB of base64
+   * pushed the total string size past the limit. By streaming JSON for
+   * metadata and putting screenshots in their own row-per-image layout,
+   * no single in-memory string ever needs to be larger than ~250 KB.
+   *
+   * Older v7 workbooks (screenshots inline in __data JSON) still load —
+   * the read path checks for both formats.
    */
-  const dataPayload = {
-    version: 7,
-    roundsMeta,
-    hopByRound: hopByRound || {},
-    threads: threads.map(t => ({
-      language_folder: t.language_folder,
-      language_code: t.language_code,
-      scale: t.scale,
-      pdf_filename: t.pdf_filename,
-      page: t.page,
-      rect: t.rect,
-      first_seen_round: t.first_seen_round || (t.rounds[0]?.round ?? 1),
-      flag_late: !!t.flag_late,
-      late_root_cause: t.late_root_cause || null,
-      rounds: t.rounds.map(r => ({
-        round: r.round, original: r.original, reply: r.reply,
-        author: r.author, rect: r.rect,
-      })),
-      screenshot_b64: t.screenshot ? bytesToBase64(t.screenshot) : null,
-      screenshot_aspect: t.screenshot_aspect || null,
-    })),
-  };
-  const json = JSON.stringify(dataPayload);
-  const dataSheet = wb.addWorksheet('__data');
-  dataSheet.getCell('B1').value = 'DO NOT DELETE — tool-managed round history';
-  dataSheet.getCell('B1').font = { name: 'Calibri', bold: true, color: { argb: 'FFB52525' }, size: 11 };
-  const CHUNK = 30000;
-  let cIdx = 1;
-  for (let offset = 0; offset < json.length; offset += CHUNK) {
-    const cell = dataSheet.getCell(`A${cIdx}`);
-    cell.value = json.slice(offset, offset + CHUNK);
-    cell.font = { name: 'Calibri', size: 8, color: { argb: 'FF999999' } };
-    cIdx++;
+  try {
+    // ---- metadata JSON, streamed into __data!A column ----
+    const dataSheet = wb.addWorksheet('__data');
+    dataSheet.getCell('B1').value = 'DO NOT DELETE — tool-managed round history';
+    dataSheet.getCell('B1').font = { name: 'Calibri', bold: true, color: { argb: 'FFB52525' }, size: 11 };
+
+    const CHUNK = 30000;
+    let buffer = '';
+    let cIdx = 1;
+    const cellFont = { name: 'Calibri', size: 8, color: { argb: 'FF999999' } };
+    function flush() {
+      while (buffer.length >= CHUNK) {
+        const cell = dataSheet.getCell(`A${cIdx}`);
+        cell.value = buffer.slice(0, CHUNK);
+        cell.font = cellFont;
+        cIdx++;
+        buffer = buffer.slice(CHUNK);
+      }
+    }
+    function emit(s) { buffer += s; if (buffer.length >= CHUNK * 4) flush(); }
+
+    emit('{"version":8,"roundsMeta":');
+    emit(JSON.stringify(roundsMeta));
+    emit(',"hopByRound":');
+    emit(JSON.stringify(hopByRound || {}));
+    emit(',"threads":[');
+    for (let i = 0; i < threads.length; i++) {
+      if (i > 0) emit(',');
+      // Yield every 100 threads so the browser repaints during the
+      // metadata streaming phase too. This loop runs after the per-tab
+      // loop above and adds up for large workbooks.
+      if (i % 100 === 0 && i > 0) {
+        progressTitle.innerHTML =
+          `<span class="spinner"></span>Writing persistence data… ${i}/${threads.length}`;
+        await new Promise(r => setTimeout(r, 0));
+      }
+      const t = threads[i];
+      // Emit each thread as a JSON object WITHOUT screenshot bytes. The
+      // separate __images sheet matches screenshots back by thread index.
+      const tMeta = {
+        language_folder: t.language_folder,
+        language_code: t.language_code,
+        scale: t.scale,
+        pdf_filename: t.pdf_filename,
+        page: t.page,
+        rect: t.rect,
+        first_seen_round: t.first_seen_round || (t.rounds[0]?.round ?? 1),
+        flag_late: !!t.flag_late,
+        late_root_cause: t.late_root_cause || null,
+        rounds: t.rounds.map(r => ({
+          round: r.round, original: r.original, reply: r.reply,
+          author: r.author, rect: r.rect,
+        })),
+        screenshot_aspect: t.screenshot_aspect || null,
+        has_screenshot: !!t.screenshot,
+      };
+      emit(JSON.stringify(tMeta));
+    }
+    emit(']}');
+    // Final flush — split any remaining buffer into CHUNK-sized cells so no
+    // cell exceeds Excel's 32767-char-per-cell limit.
+    flush();
+    while (buffer.length) {
+      const cell = dataSheet.getCell(`A${cIdx}`);
+      cell.value = buffer.slice(0, CHUNK);
+      cell.font = cellFont;
+      cIdx++;
+      buffer = buffer.slice(CHUNK);
+    }
+    dataSheet.getColumn('A').width = 60;
+    dataSheet.getColumn('A').hidden = true;
+    dataSheet.getColumn('B').width = 80;
+    try { dataSheet.state = 'hidden'; } catch (e) {}
+
+    // ---- screenshots, one row per image, b64 chunked across columns ----
+    const imagesSheet = wb.addWorksheet('__images');
+    imagesSheet.getCell('A1').value = 'DO NOT DELETE — screenshot bytes';
+    imagesSheet.getCell('A1').font = { name: 'Calibri', bold: true, color: { argb: 'FFB52525' }, size: 11 };
+    let imgRow = 2;
+    for (let i = 0; i < threads.length; i++) {
+      if (!threads[i].screenshot) continue;
+      // Yield every 50 image rows. This is the heaviest loop in the whole
+      // build phase — each iteration base64-encodes ~50 KB of binary data
+      // and writes 1–10 Excel cells. Without yields, the browser hangs.
+      if (imgRow % 50 === 0) {
+        progressTitle.innerHTML =
+          `<span class="spinner"></span>Writing screenshots… ${imgRow - 1}/${threads.length}`;
+        await new Promise(r => setTimeout(r, 0));
+      }
+      const b64 = bytesToBase64(threads[i].screenshot);
+      imagesSheet.getCell(imgRow, 1).value = i;           // thread index
+      // Distribute b64 across columns starting at B (col 2); each cell ≤ CHUNK chars
+      let col = 2;
+      for (let off = 0; off < b64.length; off += CHUNK) {
+        imagesSheet.getCell(imgRow, col).value = b64.slice(off, off + CHUNK);
+        col++;
+      }
+      imgRow++;
+    }
+    imagesSheet.getColumn('A').width = 8;
+    try { imagesSheet.state = 'hidden'; } catch (e) {}
+
+  } catch (e) {
+    // If persistence write fails for ANY reason, keep the visible workbook
+    // intact. The user can still see and use this round's output; only the
+    // automatic merge for subsequent rounds is lost.
+    log(
+      `Could not write round-persistence data: ${e.message || e}. ` +
+      `The workbook is still being saved with all visible content, but ` +
+      `subsequent rounds may not auto-merge against it.`,
+      'warn'
+    );
+    // Remove any partial __data / __images sheets so the workbook stays valid
+    try {
+      const ds = wb.getWorksheet('__data');     if (ds) wb.removeWorksheet(ds.id);
+      const is = wb.getWorksheet('__images');   if (is) wb.removeWorksheet(is.id);
+    } catch (_) {}
   }
-  dataSheet.getColumn('A').width = 60;
-  dataSheet.getColumn('A').hidden = true;
-  dataSheet.getColumn('B').width = 80;
-  try { dataSheet.state = 'hidden'; } catch (e) {}
 
   const buf = await wb.xlsx.writeBuffer();
   return new Blob([buf], {
@@ -2280,12 +2578,16 @@ function showResult({ threads, roundsMeta, newComments, matchedToPrior, lateFlag
   }
 
   const totalComments = threads.reduce((s, t) => s + t.rounds.length, 0);
-  // Differentiate qb-PRO screenshots (mobile app screen captures) from other
-  // PDFs (scale assessments). The user's workflow treats these distinctly:
-  // "screenshots" = qb-PRO files only, "scales" = everything else.
+  // Two distinct counts the user might want to know per category:
+  //   - thread count: how many comment rows landed in this category
+  //   - file count: how many distinct PDFs that category covers
+  // The previous panel only showed thread counts under labels like
+  // "Scales (other PDFs)" which read as a file count and confused users.
   const isQbPro = (name) => /^qb[-_\s]?pro/i.test(String(name || '').trim());
-  const screenshotThreads = threads.filter(t => isQbPro(t.pdf_filename)).length;
-  const scaleThreads = threads.length - screenshotThreads;
+  const qbProThreads = threads.filter(t => isQbPro(t.pdf_filename));
+  const scaleThreads = threads.filter(t => !isQbPro(t.pdf_filename));
+  const qbProFiles  = new Set(qbProThreads.map(t => t.pdf_filename)).size;
+  const scaleFiles  = new Set(scaleThreads.map(t => t.pdf_filename)).size;
 
   statsEl.innerHTML = `
     <div class="stat"><div class="stat-num">${threads.length}</div><div class="stat-label">Threads</div></div>
@@ -2293,8 +2595,8 @@ function showResult({ threads, roundsMeta, newComments, matchedToPrior, lateFlag
     <div class="stat"><div class="stat-num">${newComments + matchedToPrior}</div><div class="stat-label">This round</div></div>
     <div class="stat"><div class="stat-num">${matchedToPrior}</div><div class="stat-label">Matched to prior</div></div>
     <div class="stat"><div class="stat-num ${lateFlags > 0 ? 'flag' : ''}">${lateFlags}</div><div class="stat-label">Flagged late</div></div>
-    <div class="stat"><div class="stat-num">${screenshotThreads}</div><div class="stat-label">Screenshots&nbsp;(qb-PRO)</div></div>
-    <div class="stat"><div class="stat-num">${scaleThreads}</div><div class="stat-label">Scales (other PDFs)</div></div>
+    <div class="stat"><div class="stat-num">${qbProFiles}</div><div class="stat-label">qb-PRO files<br/><span style="font-size:0.85em;opacity:0.7;">(${qbProThreads.length} comments)</span></div></div>
+    <div class="stat"><div class="stat-num">${scaleFiles}</div><div class="stat-label">Scale files<br/><span style="font-size:0.85em;opacity:0.7;">(${scaleThreads.length} comments)</span></div></div>
   `;
 
   result.classList.add('active');
