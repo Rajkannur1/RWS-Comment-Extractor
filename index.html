@@ -586,9 +586,27 @@ const LANG_MAP = {
 function languageCode(folderName) {
   if (LANG_MAP[folderName]) return LANG_MAP[folderName];
   const cleaned = folderName.replace(/  +/g, ' ').trim();
-  if (cleaned.includes(' - ')) return cleaned.split(' - ').pop().trim();
+  // "Words - CODE" pattern (e.g. "Spanish - US", "French - BE"). Only treat
+  // as a language code if CODE actually LOOKS like one — 2 to 5 letters,
+  // pure alphabetic. This rejects junk like "files_en_us" that comes from
+  // splitting an unrelated wrapper folder name on whitespace.
+  if (cleaned.includes(' - ')) {
+    const last = cleaned.split(' - ').pop().trim();
+    if (/^[A-Za-z]{2,5}$/.test(last)) return last;
+  }
+  // "Words CODE" without hyphen — rarer, only accept when the final token
+  // is a plausible 2–5 letter code. Without this guard, any multi-word
+  // folder (e.g. "YDAN_Source files_en_us") falls through and the last
+  // word gets returned as a fake language code.
   const parts = cleaned.split(/\s+/);
-  return parts[parts.length - 1] || cleaned;
+  if (parts.length > 1) {
+    const last = parts[parts.length - 1];
+    if (/^[A-Za-z]{2,5}$/.test(last)) return last;
+  }
+  // Fallback: return the original string. Callers compare candidate !== seg
+  // to decide whether a transformation happened, so returning the input
+  // unchanged correctly signals "this is not a language folder".
+  return cleaned;
 }
 
 // Friendly display name per language code — used as the Excel tab name.
@@ -618,7 +636,13 @@ function languageDisplay(code, fallbackFolder) {
 }
 
 const SCALE_PATTERNS = [
-  [/qb-?PRO[-_]([A-Z0-9]+(?:[-_][A-Z0-9]+)?)/i, m => `qb-PRO ${m[1]}`],
+  // NOTE: qb-PRO prefix on screens-side filenames is treated as a decoration
+  // by detectScale (stripped before pattern matching), not captured as part
+  // of the scale name. There used to be a "qb-?PRO[-_]([A-Z0-9]+...)" pattern
+  // here that captured the qb-PRO scale ID but with /i flag it ate trailing
+  // "_screenshot" producing names like "qb-PRO CM3001B-SCREENSHOT" that
+  // didn't match the comments side's "CM3001B". Removed in favour of
+  // prefix-stripping; the specific patterns below handle the scale ID.
   [/CSSRS[\s_-]*Baseline/i, () => "CSSRS Baseline"],
   [/CSSRS[\s_-]*(LA|Last\s*assessed)/i, () => "CSSRS LA"],
   [/CSSRS[\s_-]*email/i, () => "CSSRS Email"],
@@ -644,10 +668,16 @@ const SCALE_PATTERNS = [
   [/\b(FAS\d+[A-Z]?)\b/i, m => m[1]],
   [/\b(PHQ9?\d*[-]?[A-Z]?)\b/i, m => m[1]],
   [/\b(WOMAC|WOMOINRS\d*)\b/i, m => m[1]],
-  [/\b(WPAI\d*[A-Z\-]*)\b/i, m => m[1]],
-  [/\b(EQ5D5L\d*[A-Z\-]*)\b/i, m => m[1]],
+  // The next three patterns must NOT use /i. With /i, the character class
+  // [A-Z\-]* becomes [A-Za-z\-]* and greedily consumes the entire
+  // "-screenshot-N" trailing portion of screens-side filenames, producing
+  // a scale name like "WPAI2001-OK-screenshot-" that doesn't match the
+  // comments side. Without /i and with a bounded {1,3} letter run, the
+  // pattern stops at the real scale boundary.
+  [/\b(WPAI\d+(?:-[A-Z]{1,3})?)\b/, m => m[1]],
+  [/\b(EQ5D5L\d+(?:-[A-Z]{1,3})?)\b/, m => m[1]],
   [/\b(PNRS\d*)\b/i, m => m[1]],
-  [/\b(PGI[A-Z]+\d*[A-Z\-]*)\b/i, m => m[1]],
+  [/\b(PGI[A-Z]+\d+(?:-[A-Z]{1,3})?)\b/, m => m[1]],
   [/missed[\s_-]*dose/i, () => "Missed dose"],
   [/interrupted[\s_-]*dose/i, () => "Interrupted dose"],
   [/multiple[\s_-]*dose/i, () => "Multiple dose"],
@@ -657,8 +687,31 @@ const SCALE_PATTERNS = [
   [/adhoc[\s_-]*trigger/i, () => "ADHOC Trigger"],
 ];
 function detectScale(filename) {
+  // CRITICAL: normalize underscores to hyphens BEFORE running pattern
+  // matching. Regex \b treats underscores as WORD characters, so a pattern
+  // like /\b(FAS\d+[A-Z]?)\b/ fails on "FAS1001A_screenshot" because there
+  // is no word boundary between "A" and "_". Screens-side filenames use
+  // underscores as separators (e.g. "qb-PRO-FAS1001A_screenshot-0.png");
+  // comments-side filenames use hyphens (e.g. "FAS1001A-for-updates.pdf").
+  // Without this normalization, the screens-side scale falls into the
+  // fallback case and gets a different name than the comments-side scale,
+  // producing the "Comments received but screens never sent" false alarm
+  // for every scale whose screens file has underscore separators.
+  //
+  // ALSO strip the leading qb-PRO prefix here. qb-PRO is a filename
+  // decoration that identifies "this is a screenshot" — it's NOT part of
+  // the scale identity. Comments-side filenames don't carry the prefix
+  // (RWS returns "<scale>-for-updates.pdf"), so without stripping the
+  // prefix from screens-side, every qb-PRO scale matches a different
+  // pattern (or the same pattern with a different capture) and the
+  // Scope tab join silently fails. The scale-vs-screenshot distinction
+  // is preserved through isQbPro(filename) — it looks at the original
+  // filename, not the derived scale name, so we lose nothing.
+  const matchTarget = filename
+    .replace(/_/g, '-')
+    .replace(/^qb[-_\s]?pro[-_\s]+/i, '');
   for (const [pat, build] of SCALE_PATTERNS) {
-    const m = filename.match(pat);
+    const m = matchTarget.match(pat);
     if (m) {
       let r = build(m);
       if (/^(qb-PRO\s+)?[A-Za-z0-9\-]+$/.test(r) && /\d/.test(r)) {
@@ -668,9 +721,16 @@ function detectScale(filename) {
       return r;
     }
   }
-  let base = filename.replace(/\.pdf$/i, '');
-  base = base.replace(/[-_]for[-_ ]?(updates?|atom\s*\d+|further\s*updates?).*$/i, '');
-  base = base.replace(/[-_]reviewed.*$/i, '');
+  // Fallback: clean up the raw filename. The order here matters — strip
+  // file extensions first, then known prefixes/suffixes that differ
+  // between the screens side (X_screenshot-N.png) and the comments side
+  // (X-for-updates.pdf). matchTarget already has _ → - applied and the
+  // qb-PRO prefix removed, so we work from that.
+  let base = matchTarget.replace(/\.(pdf|png|jpg|jpeg)$/i, '');
+  base = base.replace(/[-_\s]+screenshot[-_\s]*[\w\-]*$/i, '');              // strip _screenshot-N or -screenshot-esUS (screens side)
+  base = base.replace(/[-_]for[-_ ]?(updates?|atom\s*\d+|further\s*updates?).*$/i, '');  // (comments side)
+  base = base.replace(/[-_]reviewed.*$/i, '');                               // (comments side)
+  base = base.replace(/[-_](es|en|fr|de|ja|ko|nl|pt|zh)[A-Z]{2}$/i, '');     // strip trailing language code like -esUS or -koKR
   base = base.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
   return base.slice(0, 50) || 'Other';
 }
@@ -1093,7 +1153,14 @@ async function parseHopZip(file) {
   }
   const out = [];
   for (const f of allFiles) {
-    const segs = f.name.split('/');
+    // CRITICAL: use the WRAPPER-STRIPPED path here, not f.name. Without this,
+    // an outer wrapper folder like "YDAN_Source files_en_us" gets walked
+    // first and the loose languageCode heuristic mis-identifies it as the
+    // language (returning "files_en_us"), short-circuiting the loop before
+    // it reaches the real language folder underneath (e.g. "Spanish - US").
+    // The dedupPath function already computes the stripped path — reuse it.
+    const strippedName = dedupPath(f);
+    const segs = strippedName.split('/');
     const filename = segs[segs.length - 1];
     if (!filename) continue;
     // Pull language from any folder path segment whose name maps to a language code
@@ -1109,6 +1176,20 @@ async function parseHopZip(file) {
       filename,
     });
   }
+
+  // Diagnostic summary so users can verify what parseHopZip extracted vs.
+  // what the Scope tab shows. If a language appears with zero entries OR
+  // is missing entirely from this log, that points at a structure issue in
+  // the screens zip (wrapper folder, mis-named language folder, etc.).
+  const perLang = {};
+  for (const e of out) {
+    perLang[e.language] = (perLang[e.language] || 0) + 1;
+  }
+  const langSummary = Object.entries(perLang)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `${k === '*' ? '(no-lang)' : k}=${v}`)
+    .join(', ');
+  log(`Screens parsed: ${out.length} entr${out.length === 1 ? 'y' : 'ies'} across languages — ${langSummary}`, 'info');
   return out;
 }
 
