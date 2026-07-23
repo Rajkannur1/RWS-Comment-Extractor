@@ -481,29 +481,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       </div>
     </div>
 
-    <div class="step" id="stepHop">
-      <div class="step-head">
-        <div class="step-num">II</div>
-        <div class="step-text">
-          <p class="step-title">Previously submitted screens from eCOA (zip)</p>
-          <p class="step-hint">The screens from eCOA team sent to RWS for this round.</p>
-        </div>
-        <div class="step-meta" id="hopMeta">Recommended</div>
-      </div>
-      <div class="step-body">
-        <div class="dropzone" id="dropHop">
-          <input type="file" id="fileHop" accept=".zip">
-          <div class="dz-icon">⤓</div>
-          <p class="dz-title">Drop the screens zip here</p>
-          <p class="dz-sub">.zip of screens/scales sent to RWS</p>
-          <div class="dz-file" id="hopFile" style="display:none;"></div>
-        </div>
-      </div>
-    </div>
-
     <div class="step" id="step1">
       <div class="step-head">
-        <div class="step-num">III</div>
+        <div class="step-num">II</div>
         <div class="step-text">
           <p class="step-title">Continuing an earlier round? <span style="font-weight:400;color:var(--ink-3);">— for Rounds 2 through 5</span></p>
           <p class="step-hint">Drop the Excel file from your previous round here, so this round's comments can be merged into it.</p>
@@ -523,10 +503,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
     <div class="step" id="step3">
       <div class="step-head">
-        <div class="step-num">IV</div>
+        <div class="step-num">III</div>
         <div class="step-text">
           <p class="step-title">Confirm the round and run</p>
-          <p class="step-hint">The tool auto-detects the next round when you add a previous workbook in Step III.</p>
+          <p class="step-hint">The tool auto-detects the next round when you add a previous workbook in Step II.</p>
         </div>
         <div class="step-meta" id="step3Meta">Ready</div>
       </div>
@@ -624,9 +604,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         <h4>Adding more rounds later</h4>
         <p>
           When Round 2 arrives: open this tool, drop the new Round 2 RWS zip
-          into Step I, optionally drop this round&#39;s screens zip into Step II,
-          drop your Round 1 workbook into Step III, click Run. The tool
-          merges everything into a single updated workbook.
+          into Step I, drop your Round 1 workbook into Step II, click Run.
+          The tool merges everything into a single updated workbook.
         </p>
       </div>
     </div>
@@ -662,13 +641,10 @@ if (typeof pdfjsLib !== 'undefined') {
 }
 
 const $ = (id) => document.getElementById(id);
-const step1 = $('step1'), step2 = $('step2'), step3 = $('step3'),
-      stepHop = $('stepHop');
+const step1 = $('step1'), step2 = $('step2'), step3 = $('step3');
 const dropPrior = $('dropPrior'), filePrior = $('filePrior'), priorFile = $('priorFile');
 const dropZip = $('dropZip'), fileZip = $('fileZip'), zipFile = $('zipFile');
-const dropHop = $('dropHop'), fileHop = $('fileHop'), hopFile = $('hopFile');
-const step1Meta = $('step1Meta'), step3Meta = $('step3Meta'),
-      hopMeta = $('hopMeta');
+const step1Meta = $('step1Meta'), step3Meta = $('step3Meta');
 const roundPills = $('roundPills'), roundNote = $('roundNote');
 const optScreens = $('optScreens'), optFlagLate = $('optFlagLate');
 const btnRun = $('btnRun'), btnReset = $('btnReset'),
@@ -685,7 +661,6 @@ const result = $('result'), resultTitle = $('resultTitle'),
 let priorBlob = null;
 let priorState = null;
 let zipBlobFile = null;
-let hopBlobFile = null;
 let outBlob = null;
 let outName = 'comments.xlsx';
 let currentRound = 1;
@@ -864,11 +839,12 @@ function detectScale(filename) {
   // decoration that identifies "this is a screenshot" — it's NOT part of
   // the scale identity. Comments-side filenames don't carry the prefix
   // (RWS returns "<scale>-for-updates.pdf"), so without stripping the
-  // prefix from screens-side, every qb-PRO scale matches a different
-  // pattern (or the same pattern with a different capture) and the
-  // Scope tab join silently fails. The scale-vs-screenshot distinction
-  // is preserved through isQbPro(filename) — it looks at the original
-  // filename, not the derived scale name, so we lose nothing.
+  // prefix here every qb-PRO scale would produce a different name from
+  // its non-qb counterpart, and the round-to-round comment matching
+  // would silently fail on cross-round threads. The scale-vs-screenshot
+  // distinction is preserved through isQbPro(filename) — it looks at
+  // the original filename, not the derived scale name, so we lose
+  // nothing.
   const matchTarget = filename
     .replace(/_/g, '-')
     .replace(/^qb[-_\s]?pro[-_\s]+/i, '');
@@ -975,16 +951,6 @@ wireDropzone(dropZip, fileZip, (f) => {
   refreshRunButton();
 }, '\\.zip');
 
-wireDropzone(dropHop, fileHop, (f) => {
-  hopBlobFile = f;
-  hopFile.textContent = `${f.name}  ·  ${(f.size / (1024*1024)).toFixed(1)} MB`;
-  hopFile.style.display = 'inline-block';
-  dropHop.classList.add('has-file');
-  stepHop.classList.add('has-input');
-  hopMeta.textContent = 'Screens loaded';
-  refreshRunButton();
-}, '\\.zip');
-
 roundPills.addEventListener('click', e => {
   const p = e.target.closest('.round-pill');
   if (!p) return;
@@ -1033,18 +999,14 @@ btnAnother.addEventListener('click', () => {
 });
 function resetAll() {
   priorBlob = null; priorState = null;
-  zipBlobFile = null; hopBlobFile = null;
+  zipBlobFile = null;
   outBlob = null;
-  filePrior.value = ''; fileZip.value = ''; fileHop.value = '';
+  filePrior.value = ''; fileZip.value = '';
   priorFile.textContent = ''; priorFile.style.display = 'none';
   zipFile.textContent = ''; zipFile.style.display = 'none';
-  hopFile.textContent = '';  hopFile.style.display  = 'none';
   dropPrior.classList.remove('has-file'); dropZip.classList.remove('has-file');
-  dropHop.classList.remove('has-file');
   step1.classList.remove('has-input'); step2.classList.remove('has-input');
-  stepHop.classList.remove('has-input');
   step1Meta.textContent = 'Skip for Round 1';
-  hopMeta.textContent = 'Recommended';
   selectRound(1);
   hideProgress();
   logEl.classList.remove('active'); logEl.innerHTML = '';
@@ -1075,16 +1037,12 @@ btnRun.addEventListener('click', async () => {
 async function runPipeline() {
   let priorThreads = priorState ? priorState.threads.slice() : [];
   let priorRoundsMeta = priorState ? priorState.roundsMeta.slice() : [];
-  let priorHopByRound = (priorState && priorState.hopByRound) ? { ...priorState.hopByRound } : {};
   // If overwriting an existing round, strip prior entries for that round
   for (const t of priorThreads) {
     t.rounds = t.rounds.filter(r => r.round !== currentRound);
   }
   // Drop threads that became empty after the strip (i.e. only existed in this round)
   priorThreads = priorThreads.filter(t => t.rounds.length > 0);
-  // If overwriting, also drop the prior HOP entry for this round (it will be
-  // replaced below if the user uploaded a new HOP).
-  delete priorHopByRound[currentRound];
 
   setProgress(0, 1, 'Reading zip…');
   progressTitle.innerHTML = '<span class="spinner"></span>Reading zip…';
@@ -1093,42 +1051,8 @@ async function runPipeline() {
     embedScreenshots: optScreens.checked,
   });
 
-  // Parse this round's screens zip if provided
-  let thisRoundHop = null;
-  if (hopBlobFile) {
-    progressTitle.innerHTML = '<span class="spinner"></span>Reading screens zip…';
-    try {
-      thisRoundHop = await parseHopZip(hopBlobFile);
-      log(`Screens zip: ${thisRoundHop.length} screen(s) identified.`, 'info');
-      priorHopByRound[currentRound] = thisRoundHop;
-    } catch (e) {
-      const msg = String(e.message || e);
-      // Detect the browser's "file handle became invalid" condition (the
-      // file was moved, renamed, deleted, or modified after upload — common
-      // when files live on a synced drive like OneDrive or are extracted
-      // from a temp folder that the OS later cleans up).
-      if (/permission|NotReadable|denied|after a reference|after a refer/i.test(msg)) {
-        log(
-          `The screens zip became unreadable mid-process. ` +
-          `This usually means the file was moved, renamed, or modified after upload ` +
-          `(common with OneDrive-synced files). Please drop the screens zip again ` +
-          `and re-run. The rest of the workbook will still be produced this run, ` +
-          `just without screens-based audit info.`,
-          'warn'
-        );
-      } else {
-        log(`Screens zip could not be parsed: ${msg}. ` +
-            `The rest of the workbook will still be produced.`, 'warn');
-      }
-    }
-  }
-
   progressTitle.innerHTML = '<span class="spinner"></span>Matching to prior rounds…';
   setProgress(1, 1, 'Building threads…');
-
-  // Build a quick lookup: for each (langCode|"*", scale) → set of rounds that
-  // contained it in the HOP. The "*" key captures language-agnostic HOP entries.
-  const hopIndex = buildHopIndex(priorHopByRound);
 
   // Threads searched by findBestMatch: ONLY threads that already existed
   // BEFORE this run (i.e. from prior rounds). New threads we create during
@@ -1139,7 +1063,6 @@ async function runPipeline() {
   const newlyAddedThreads = [];
 
   let newComments = 0, lateFlags = 0, matchedToPrior = 0;
-  let devMissCount = 0, rwsMissCount = 0;
   for (const langFolder of Object.keys(newCommentsByLang)) {
     const langCode = languageCode(langFolder);
     for (const nc of newCommentsByLang[langFolder]) {
@@ -1158,30 +1081,6 @@ async function runPipeline() {
         const isLate = (currentRound > 1) && optFlagLate.checked;
         if (isLate) lateFlags++;
 
-        // Determine late root cause. Classification matrix:
-        //   - 'rws_missed' — scale WAS in a prior round's HOP (RWS overlooked it)
-        //   - 'dev_missed' — not in any prior HOP (we didn't send it)
-        //   - null         — no HOP data uploaded at all, can't determine
-        //
-        // Note: the single user-visible label in the workbook ("This comment
-        // was not included in the previous round...") is the same regardless
-        // of root cause. The root-cause classification stays in __data only
-        // for audit (Scope tab) purposes.
-        let lateRootCause = null;
-        if (isLate) {
-          const priorRounds = Object.keys(priorHopByRound).map(Number).filter(r => r < currentRound);
-          if (priorRounds.length > 0) {
-            const wasInPriorHop = isScaleInAnyHop(hopIndex, nc.scale, langCode, priorRounds);
-            if (wasInPriorHop) {
-              lateRootCause = 'rws_missed';
-              rwsMissCount++;
-            } else {
-              lateRootCause = 'dev_missed';
-              devMissCount++;
-            }
-          }
-        }
-
         newlyAddedThreads.push({
           language_folder: langFolder,
           language_code: langCode,
@@ -1191,7 +1090,6 @@ async function runPipeline() {
           rect: nc.rect,
           first_seen_round: currentRound,
           flag_late: isLate,
-          late_root_cause: lateRootCause,
           screenshot: nc.screenshotPng || null,
           screenshot_aspect: nc.screenshotAspect || null,
           rounds: [{
@@ -1215,18 +1113,14 @@ async function runPipeline() {
     round: currentRound,
     date: new Date().toISOString().slice(0, 10),
     zipName: zipBlobFile.name,
-    hopName: hopBlobFile ? hopBlobFile.name : null,
   });
   priorRoundsMeta.sort((a, b) => a.round - b.round);
 
   progressTitle.innerHTML = '<span class="spinner"></span>Building Excel…';
   setProgress(1, 1, 'Composing workbook…');
-  log(`Round ${currentRound}: new=${newComments}, matched=${matchedToPrior}, late=${lateFlags}` +
-      (lateFlags > 0 && (devMissCount + rwsMissCount > 0)
-        ? ` (RWS-missed=${rwsMissCount}, dev-missed=${devMissCount})` : ''),
-      'info');
+  log(`Round ${currentRound}: new=${newComments}, matched=${matchedToPrior}, late=${lateFlags}`, 'info');
 
-  const blob = await buildWorkbook(priorThreads, priorRoundsMeta, priorHopByRound);
+  const blob = await buildWorkbook(priorThreads, priorRoundsMeta);
   outBlob = blob;
   outName = makeOutputName(zipBlobFile.name, priorRoundsMeta);
 
@@ -1286,134 +1180,6 @@ function dedupeByLatest(entries, pathOf) {
   return [...byKey.values()];
 }
 
-// ============================================================
-// HOP zip parsing — extract a list of {language, scale, filename} tuples
-// from the HOP zip. We don't open any files; we just look at paths and
-// filenames, applying the same SCALE_PATTERNS and LANG_MAP we already use
-// for the RWS comments zip.
-// ============================================================
-async function parseHopZip(file) {
-  const zip = await JSZip.loadAsync(await file.arrayBuffer());
-  let allFiles = Object.values(zip.files).filter(f => !f.dir);
-  if (!allFiles.length) throw new Error('Screens zip is empty.');
-  const beforeObsolete = allFiles.length;
-  allFiles = allFiles.filter(f => !isObsoletePath(f.name));
-  const afterObsolete = allFiles.length;
-
-  // Detect optional outer wrapper folder(s) — iterative to handle
-  // multi-level wrapping (e.g. re-zipped folders). See processZip for the
-  // same logic and rationale.
-  const looksLikeLanguageFolder = (name) =>
-    LANG_MAP[name] !== undefined ||
-    /^[a-z]{2,3}-[A-Z]{2,3}$/.test(name);
-  let stripPrefix = '';
-  {
-    let currentPaths = allFiles.map(f => f.name);
-    const MAX_ITER = 6;
-    for (let i = 0; i < MAX_ITER; i++) {
-      const firsts = new Set(currentPaths.map(p => p.split('/')[0]));
-      if (firsts.size !== 1) break;
-      const wrap = [...firsts][0];
-      if (looksLikeLanguageFolder(wrap)) break;
-      const seconds = new Set(currentPaths.map(p => {
-        const parts = p.split('/');
-        return parts.length > 1 ? parts[1] : null;
-      }).filter(Boolean));
-      if (seconds.size === 0) break;
-      stripPrefix += wrap + '/';
-      if (seconds.size > 1) break;
-      const onlySecond = [...seconds][0];
-      if (looksLikeLanguageFolder(onlySecond)) break;
-      currentPaths = currentPaths.map(p => p.slice(wrap.length + 1));
-    }
-  }
-  const dedupPath = (e) => stripPrefix && e.name.startsWith(stripPrefix)
-    ? e.name.slice(stripPrefix.length)
-    : e.name;
-  allFiles = dedupeByLatest(allFiles, (e, wantDate) => wantDate ? e.date : dedupPath(e));
-  const afterDedupe = allFiles.length;
-
-  if (beforeObsolete !== afterObsolete) {
-    log(`Screens: skipped ${beforeObsolete - afterObsolete} file(s) in Obsolete/Archive folders.`, 'info');
-  }
-  if (afterObsolete !== afterDedupe) {
-    log(`Screens: deduped ${afterObsolete - afterDedupe} same-name file(s) (kept latest).`, 'info');
-  }
-  const out = [];
-  for (const f of allFiles) {
-    // CRITICAL: use the WRAPPER-STRIPPED path here, not f.name. Without this,
-    // an outer wrapper folder like "YDAN_Source files_en_us" gets walked
-    // first and the loose languageCode heuristic mis-identifies it as the
-    // language (returning "files_en_us"), short-circuiting the loop before
-    // it reaches the real language folder underneath (e.g. "Spanish - US").
-    // The dedupPath function already computes the stripped path — reuse it.
-    const strippedName = dedupPath(f);
-    const segs = strippedName.split('/');
-    const filename = segs[segs.length - 1];
-    if (!filename) continue;
-    // Pull language from any folder path segment whose name maps to a language code
-    let langCode = null;
-    for (const seg of segs.slice(0, -1)) {
-      const candidate = languageCode(seg);
-      if (LANG_MAP[seg] || (candidate && candidate !== seg)) { langCode = candidate; break; }
-    }
-    const scale = detectScale(filename);
-    out.push({
-      language: langCode || '*',  // '*' = language-agnostic HOP entry
-      scale,
-      filename,
-    });
-  }
-
-  // Diagnostic summary so users can verify what parseHopZip extracted vs.
-  // what the Scope tab shows. If a language appears with zero entries OR
-  // is missing entirely from this log, that points at a structure issue in
-  // the screens zip (wrapper folder, mis-named language folder, etc.).
-  const perLang = {};
-  for (const e of out) {
-    perLang[e.language] = (perLang[e.language] || 0) + 1;
-  }
-  const langSummary = Object.entries(perLang)
-    .sort((a, b) => b[1] - a[1])
-    .map(([k, v]) => `${k === '*' ? '(no-lang)' : k}=${v}`)
-    .join(', ');
-  log(`Screens parsed: ${out.length} entr${out.length === 1 ? 'y' : 'ies'} across languages — ${langSummary}`, 'info');
-  return out;
-}
-
-
-
-// Build a fast lookup from (langCode, scale) → set of rounds it appeared in.
-// We index BOTH by exact language code AND by '*' so a language-agnostic HOP
-// entry (no language folder) still answers "yes" for any language's lookup.
-function buildHopIndex(hopByRound) {
-  // index[`${lang}||${scale}`] = Set<round>
-  const idx = new Map();
-  for (const [roundStr, entries] of Object.entries(hopByRound || {})) {
-    const round = Number(roundStr);
-    for (const e of entries) {
-      const scale = (e.scale || '').toLowerCase();
-      if (!scale || scale === 'unknown') continue;
-      const key = `${e.language || '*'}||${scale}`;
-      if (!idx.has(key)) idx.set(key, new Set());
-      idx.get(key).add(round);
-    }
-  }
-  return idx;
-}
-
-function isScaleInAnyHop(hopIndex, scale, langCode, rounds) {
-  if (!scale) return false;
-  const scaleLower = scale.toLowerCase();
-  // Check both language-specific and language-agnostic entries
-  const keys = [`${langCode}||${scaleLower}`, `*||${scaleLower}`];
-  for (const k of keys) {
-    const roundSet = hopIndex.get(k);
-    if (!roundSet) continue;
-    for (const r of rounds) if (roundSet.has(r)) return true;
-  }
-  return false;
-}
 
 function makeOutputName(zipName, roundsMeta) {
   const base = zipName.replace(/\.zip$/i, '');
@@ -2085,13 +1851,12 @@ async function readPriorWorkbook(file) {
   }
   for (const t of parsed.threads) delete t.has_screenshot;
 
-  // Older workbooks (v2/v3/v4) won't have hopByRound — default to empty.
-  if (!parsed.hopByRound || typeof parsed.hopByRound !== 'object') {
-    parsed.hopByRound = {};
-  }
   // v6 had an initialSource field that v7 retired. Drop it on read so it
-  // doesn't survive into the new workbook.
+  // doesn't survive into the new workbook. Workbooks from versions that
+  // included a hopByRound field will still parse fine — we just ignore
+  // that field now that the screens-audit feature has been removed.
   delete parsed.initialSource;
+  delete parsed.hopByRound;
 
   return parsed;
 }
@@ -2099,7 +1864,7 @@ async function readPriorWorkbook(file) {
 // ============================================================
 // Build the workbook
 // ============================================================
-async function buildWorkbook(threads, roundsMeta, hopByRound) {
+async function buildWorkbook(threads, roundsMeta) {
   const wb = new ExcelJS.Workbook();
   wb.creator = 'RWS Comment Extractor';
   wb.created = new Date();
@@ -2279,150 +2044,6 @@ async function buildWorkbook(threads, roundsMeta, hopByRound) {
       from: { row: 1, column: 1 },
       to:   { row: sumRowIdx - 1, column: sumCols.length },
     };
-  }
-
-  /* ===== Scope tab =====
-   *
-   * Created when source-files data is available. Each row is one (scale,
-   * language) combination across the eCOA screens sent to RWS and the
-   * comments received back. Columns surface where the scale was sent (per
-   * round) and what came back as comments, so you can audit:
-   *   • Sent but never commented → review may still be pending
-   *   • Commented but never sent → unusual, worth investigating
-   */
-  const hasHop = hopByRound && Object.keys(hopByRound).length > 0;
-  if (hasHop) {
-    const scope = wb.addWorksheet('Scope', { views: [{ state: 'frozen', ySplit: 1 }] });
-    const scopeCols = [
-      { header: 'Scale',    key: 'scale',    width: 28 },
-      { header: 'Language', key: 'language', width: 22 },
-    ];
-    for (const r of roundNums) {
-      scopeCols.push({ header: `R${r} in source files sent to RWS`, key: `r${r}hop`, width: 22 });
-      scopeCols.push({ header: `R${r} comments from RWS`,           key: `r${r}cm`,  width: 18 });
-    }
-    scopeCols.push({ header: 'Note', key: 'note', width: 46 });
-    scope.columns = scopeCols;
-    styleHeaderRow(scope.getRow(1));
-    scope.getRow(1).height = 26;
-
-    // Collect every (scale, language) pair seen in any submitted-screens batch,
-    // plus pairs that received comments but were never sent.
-    const pairs = new Map();
-    function getPair(scale, language) {
-      const key = `${scale}||${language}`;
-      if (!pairs.has(key)) {
-        pairs.set(key, { scale, language, hopRounds: new Set(), commentCountsByRound: {} });
-      }
-      return pairs.get(key);
-    }
-    for (const [roundStr, entries] of Object.entries(hopByRound)) {
-      const round = Number(roundStr);
-      for (const e of entries) {
-        const lang = e.language === '*' ? '(any language)' : languageDisplay(e.language, '');
-        const pair = getPair(e.scale, lang);
-        pair.hopRounds.add(round);
-      }
-    }
-    for (const t of threads) {
-      const lang = languageDisplay(t.language_code, t.language_folder);
-      const pair = getPair(t.scale, lang);
-      for (const rd of t.rounds) {
-        pair.commentCountsByRound[rd.round] = (pair.commentCountsByRound[rd.round] || 0) + 1;
-      }
-    }
-
-    // Pre-compute two indices needed to avoid false "never sent" warnings:
-    //   1) submittedScales — every scale that appeared in screens, in any
-    //      round, in any language. Used to gate the "never sent" warning:
-    //      if the scale is in the screens at all, we don't claim it wasn't.
-    //   2) agnosticByScale — for each scale, the rounds where it was sent
-    //      at the language-agnostic level (files at the zip root, no lang
-    //      folder). An agnostic submission means "this English master is
-    //      the source for ALL languages", so every language-specific row
-    //      for that scale inherits those rounds.
-    const submittedScales = new Set();
-    const agnosticByScale = new Map();
-    for (const [roundStr, entries] of Object.entries(hopByRound)) {
-      const round = Number(roundStr);
-      for (const e of entries) {
-        const key = (e.scale || '').toLowerCase();
-        if (!key) continue;
-        submittedScales.add(key);
-        if (e.language === '*') {
-          if (!agnosticByScale.has(key)) agnosticByScale.set(key, new Set());
-          agnosticByScale.get(key).add(round);
-        }
-      }
-    }
-
-    const sortedPairs = [...pairs.values()].sort((a, b) =>
-      a.scale.localeCompare(b.scale) || a.language.localeCompare(b.language)
-    );
-    let scopeIdx = 2;
-    for (const p of sortedPairs) {
-      const scaleKey = (p.scale || '').toLowerCase();
-      // Effective rounds where this (scale, language) was covered by a
-      // screens submission. Specific-language rows inherit agnostic rounds.
-      const inherited = (p.language === '(any language)')
-        ? new Set()
-        : (agnosticByScale.get(scaleKey) || new Set());
-      const effectiveHopRounds = new Set([...p.hopRounds, ...inherited]);
-      const totalHop = effectiveHopRounds.size;
-      const totalComments = Object.values(p.commentCountsByRound).reduce((a, b) => a + b, 0);
-      const scaleEverSubmitted = submittedScales.has(scaleKey);
-
-      let note = '';
-      if (totalComments > 0 && !scaleEverSubmitted) {
-        // Only warn when the scale appears NOWHERE in any screens batch.
-        note = '⚠ Comments received but screens never sent';
-      } else if (totalHop > 0 && totalComments === 0) {
-        note = 'Sent, no comments yet';
-      } else if (totalHop > 0 && totalComments > 0) {
-        let dev_miss = false;
-        for (const [r, count] of Object.entries(p.commentCountsByRound)) {
-          const round = Number(r);
-          const seenInHop = [...effectiveHopRounds].some(hr => hr <= round);
-          if (!seenInHop && count > 0) { dev_miss = true; break; }
-        }
-        if (dev_miss) note = '⚠ Comments arrived before screens were sent';
-      }
-      // Note: if totalHop === 0 && totalComments > 0 && scaleEverSubmitted
-      // (scale was sent for a DIFFERENT language than this row's language),
-      // we leave the note blank — the user's rule is that any submission of
-      // the scale, in any language, counts as "sent".
-
-      const vals = {
-        scale: p.scale,
-        language: p.language,
-        note,
-      };
-      for (const r of roundNums) {
-        vals[`r${r}hop`] = effectiveHopRounds.has(r) ? '✓' : '';
-        vals[`r${r}cm`]  = p.commentCountsByRound[r] || '';
-      }
-      scope.getRow(scopeIdx).values = vals;
-      styleBodyRow(scope.getRow(scopeIdx), scopeIdx);
-      if (note.startsWith('⚠')) {
-        const c = scope.getRow(scopeIdx).getCell('note');
-        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFCEEDD' } };
-        c.font = { name: 'Arial', size: 10, color: { argb: 'FF8A5C00' }, bold: true };
-      }
-      // Centre the ✓ marks and counts
-      for (const r of roundNums) {
-        scope.getRow(scopeIdx).getCell(`r${r}hop`).alignment =
-          { horizontal: 'center', vertical: 'middle' };
-        scope.getRow(scopeIdx).getCell(`r${r}cm`).alignment =
-          { horizontal: 'center', vertical: 'middle' };
-      }
-      scopeIdx++;
-    }
-    if (scopeIdx > 2) {
-      scope.autoFilter = {
-        from: { row: 1, column: 1 },
-        to:   { row: scopeIdx - 1, column: scopeCols.length },
-      };
-    }
   }
 
   /* ===== Per-language sheets =====
@@ -2708,10 +2329,8 @@ async function buildWorkbook(threads, roundsMeta, hopByRound) {
     }
     function emit(s) { buffer += s; if (buffer.length >= CHUNK * 4) flush(); }
 
-    emit('{"version":8,"roundsMeta":');
+    emit('{"version":9,"roundsMeta":');
     emit(JSON.stringify(roundsMeta));
-    emit(',"hopByRound":');
-    emit(JSON.stringify(hopByRound || {}));
     emit(',"threads":[');
     for (let i = 0; i < threads.length; i++) {
       if (i > 0) emit(',');
@@ -2735,7 +2354,6 @@ async function buildWorkbook(threads, roundsMeta, hopByRound) {
         rect: t.rect,
         first_seen_round: t.first_seen_round || (t.rounds[0]?.round ?? 1),
         flag_late: !!t.flag_late,
-        late_root_cause: t.late_root_cause || null,
         rounds: t.rounds.map(r => ({
           round: r.round, original: r.original, reply: r.reply,
           author: r.author, rect: r.rect,
