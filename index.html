@@ -1796,6 +1796,30 @@ function findBestMatch(newC, threads) {
 // ============================================================
 // Read prior workbook (parse __data sheet → JSON, hydrate screenshots).
 // ============================================================
+
+// Stable per-thread identifier used to match a worksheet row back to its
+// thread object across regenerations. Built from fields that never change
+// once a thread is created (pdf_filename, scale, page, and the anchor rect
+// captured at first sighting) — NOT from round-specific data, so the same
+// thread always produces the same key in every rebuilt workbook.
+function threadKey(t) {
+  return [t.pdf_filename, t.scale, t.page, (t.rect || []).join(',')].join('\u241F');
+}
+
+// Fallback identifier for workbooks built before the RowKey column existed.
+// Less strict than threadKey() (no rect), but usable from columns that have
+// always been on the sheet: PDF File, Scale, Page, and whichever round's
+// Linguist Comment was the thread's earliest non-blank one. Scoped by
+// language_code too, since PDF/Scale/Page/text can otherwise coincide
+// across different language tabs (e.g. two "(visual marker)" placeholders
+// on the same page number of the same-named source PDF in two languages).
+function threadFallbackKey(t) {
+  const first = (t.rounds && t.rounds.length)
+    ? (t.rounds.slice().sort((a, b) => a.round - b.round)[0].original || '')
+    : '';
+  return [t.language_code, t.pdf_filename, t.scale, t.page, first].join('\u241F');
+}
+
 async function readPriorWorkbook(file) {
   const buf = await file.arrayBuffer();
   const wb = new ExcelJS.Workbook();
@@ -1823,6 +1847,101 @@ async function readPriorWorkbook(file) {
     delete t.screenshot_b64;
     // Older workbooks (v2/v3) may have a `done` field. Drop it — no longer used.
     delete t.done;
+  }
+
+  // ---- Recover the reviewer's Status column marks ----
+  // Status ("Complete" / "Issue" / "To be checked") is NOT part of the
+  // tool's own __data metadata — the person types it directly into the
+  // cell in Excel. So to carry it forward into the next round, we scan
+  // each visible language tab ourselves and match rows back to threads.
+  //
+  // Two matching strategies, tried in order:
+  //   1) The hidden RowKey column (exact, only present on workbooks built
+  //      with this Status feature).
+  //   2) A fallback built from PDF File + Scale + Page + the thread's
+  //      earliest Linguist Comment text — these columns have always
+  //      existed, so this also recovers Status from workbooks built
+  //      BEFORE the RowKey column was introduced.
+  // If a tab has no Status column at all (pre-Status-feature workbook),
+  // both maps simply stay empty for it — safe no-op.
+  const SPECIAL_SHEETS = new Set(['Cover', 'Summary', '__data', '__images']);
+  const ROUND_COL_RE = /^Round (\d+) — Linguist Comment$/;
+  const statusByKey = new Map();
+  const statusByFallback = new Map();
+
+  // Reconstruct sheet name -> language_code, using the exact same naming
+  // logic buildWorkbook() used when this workbook was generated. Needed so
+  // the fallback matcher below can be scoped per-language (otherwise two
+  // languages could collide on the same generic PDF/Scale/Page/text combo).
+  const folderByLangCode = new Map();
+  for (const t of parsed.threads) {
+    if (!folderByLangCode.has(t.language_code)) {
+      folderByLangCode.set(t.language_code, t.language_folder || '');
+    }
+  }
+  const sheetNameToLangCode = new Map();
+  const usedNamesForMatch = new Set(['Cover', 'Summary', '__data', '__images']);
+  for (const langCode of [...folderByLangCode.keys()].sort()) {
+    const displayName = languageDisplay(langCode, folderByLangCode.get(langCode));
+    sheetNameToLangCode.set(safeSheetName(displayName, usedNamesForMatch), langCode);
+  }
+
+  wb.eachSheet(sheet => {
+    if (SPECIAL_SHEETS.has(sheet.name)) return;
+    const langCode = sheetNameToLangCode.get(sheet.name);
+    if (!langCode) return;
+    const headerRow = sheet.getRow(1);
+    let statusCol = null, keyCol = null, pdfCol = null, scaleCol = null, pageCol = null;
+    const roundCols = [];
+    headerRow.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      const v = (cell.value == null ? '' : String(cell.value)).trim();
+      if (v === 'Status') statusCol = colNumber;
+      else if (v === 'RowKey') keyCol = colNumber;
+      else if (v === 'PDF File') pdfCol = colNumber;
+      else if (v === 'Scale') scaleCol = colNumber;
+      else if (v === 'Page') pageCol = colNumber;
+      else {
+        const m = ROUND_COL_RE.exec(v);
+        if (m) roundCols.push({ round: parseInt(m[1], 10), col: colNumber });
+      }
+    });
+    if (!statusCol) return;
+    roundCols.sort((a, b) => a.round - b.round);
+
+    sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+      if (rowNumber === 1) return;
+      const status = row.getCell(statusCol).value;
+      if (!status) return;
+      const statusStr = String(status);
+
+      if (keyCol) {
+        const key = row.getCell(keyCol).value;
+        if (key) statusByKey.set(String(key), statusStr);
+      }
+
+      if (pdfCol && scaleCol && pageCol && roundCols.length) {
+        const pdf = row.getCell(pdfCol).value;
+        const scale = row.getCell(scaleCol).value;
+        const page = row.getCell(pageCol).value;
+        let firstText = '';
+        for (const rc of roundCols) {
+          const v = row.getCell(rc.col).value;
+          if (v) { firstText = String(v); break; }
+        }
+        if (pdf != null && scale != null && page != null && firstText) {
+          statusByFallback.set([langCode, pdf, scale, page, firstText].join('\u241F'), statusStr);
+        }
+      }
+    });
+  });
+  for (const t of parsed.threads) {
+    const k = threadKey(t);
+    if (statusByKey.has(k)) {
+      t.status = statusByKey.get(k);
+    } else {
+      const fbk = threadFallbackKey(t);
+      if (statusByFallback.has(fbk)) t.status = statusByFallback.get(fbk);
+    }
   }
 
   // v8+: screenshots live in a dedicated __images sheet. Each row holds one
@@ -2109,6 +2228,11 @@ async function buildWorkbook(threads, roundsMeta) {
     }
     cols.push({ header: 'Screenshot', key: 'img',      width: 78 });
     cols.push({ header: 'Comments',   key: 'comments', width: 30 });
+    cols.push({ header: 'Status',     key: 'status',   width: 22 });
+    // Hidden helper column: lets readPriorWorkbook() match this row back to
+    // its thread object next round so a manually-entered Status survives
+    // regeneration. Not meant to be seen or edited by the reviewer.
+    cols.push({ header: 'RowKey',     key: 'rowKey',   width: 10, hidden: true });
     ws.columns = cols;
     styleHeaderRow(ws.getRow(1));
     ws.getRow(1).height = 30;
@@ -2176,6 +2300,23 @@ async function buildWorkbook(threads, roundsMeta) {
         'This comment was not included in the previous round. ' +
         'Please check whether it was missed by ATOM5 or the RWS team.';
 
+      // Carry the reviewer's Status mark forward from the prior workbook
+      // (t.status, populated by readPriorWorkbook()). If RWS commented on
+      // this same item again in the latest round, treat it as reopened —
+      // don't keep claiming "Complete" on a row that now has fresh
+      // feedback attached to it.
+      const hasCurrentRoundComment = t.rounds.some(rr => rr.round === maxRound);
+      let effectiveStatus = t.status || '';
+      if (hasCurrentRoundComment && effectiveStatus === 'Complete') effectiveStatus = '';
+
+      // If it was marked Complete in an earlier round and RWS raised no
+      // further comment on it since, auto-note that for the reviewer so
+      // they don't have to go re-check something already fixed.
+      const lastActiveRound = Math.max(...t.rounds.map(rr => rr.round));
+      const isFixedNoAction =
+        maxRound > 1 && !isLate && !hasCurrentRoundComment && effectiveStatus === 'Complete';
+      const FIXED_LABEL = `Fixed in round ${lastActiveRound}, no action required.`;
+
       const vals = {
         i, pdf: t.pdf_filename, scale: t.scale, page: t.page,
       };
@@ -2184,7 +2325,9 @@ async function buildWorkbook(threads, roundsMeta) {
         vals[`r${r}c`] = rd ? rd.original : '';
         vals[`r${r}r`] = rd ? rd.reply : '';
       }
-      vals.comments = isLate ? LATE_LABEL : '';
+      vals.comments = isLate ? LATE_LABEL : (isFixedNoAction ? FIXED_LABEL : '');
+      vals.status = effectiveStatus;
+      vals.rowKey = threadKey(t);
       xlRow.values = vals;
       styleBodyRow(xlRow, rowIdx);
 
@@ -2214,12 +2357,39 @@ async function buildWorkbook(threads, roundsMeta) {
         c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFB52525' } };
         c.font = { name: 'Arial', size: 10, color: { argb: 'FFFFFFFF' }, bold: true };
         c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      } else if (isFixedNoAction) {
+        // Consistent green treatment — the mirror image of the late-row
+        // red treatment above, for items already fixed and quiet since.
+        const c = xlRow.getCell('comments');
+        c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6EFCE' } };
+        c.font = { name: 'Arial', size: 10, color: { argb: 'FF2E7D32' }, bold: true };
+        c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
       } else {
         // Normal rows: leave Comments cell blank with a quiet, centered style
         xlRow.getCell('comments').alignment = {
           horizontal: 'center', vertical: 'middle', wrapText: true,
         };
       }
+
+      // Status column: a dropdown so the programmer working through the
+      // comments can mark each row's progress. Conditional formatting
+      // (added once, after the row loop, over the whole column) recolors
+      // the cell automatically based on which option is picked — no manual
+      // styling needed here beyond centering the text and adding the list.
+      const statusCell = xlRow.getCell('status');
+      statusCell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      statusCell.dataValidation = {
+        type: 'list',
+        allowBlank: true,
+        formulae: ['"Complete,Issue,To be checked"'],
+        showInputMessage: true,
+        promptTitle: 'Mark status',
+        prompt: 'Choose Complete, Issue, or To be checked.',
+        showErrorMessage: true,
+        errorStyle: 'stop',
+        errorTitle: 'Invalid status',
+        error: 'Please pick Complete, Issue, or To be checked from the dropdown.',
+      };
 
       // Thick top border to mark the start of a new PDF group. Applied LAST
       // so it wins over the late-row thin red border on the linguist cell
@@ -2273,6 +2443,34 @@ async function buildWorkbook(threads, roundsMeta) {
         from: { row: 1, column: 1 },
         to:   { row: i + 1, column: cols.length },
       };
+
+      // Color the Status column by value so anyone opening the workbook can
+      // tell at a glance, row by row, whether a comment is fixed, still an
+      // issue, or needs another look — no need to read the dropdown text.
+      const statusColLetter = colLetter(cols.findIndex(c => c.key === 'status'));
+      ws.addConditionalFormatting({
+        ref: `${statusColLetter}2:${statusColLetter}${i + 1}`,
+        rules: [
+          {
+            type: 'cellIs', operator: 'equal', priority: 1,
+            formulae: ['"Complete"'],
+            // NOTE: Excel renders conditional-formatting (dxf) solid fills from
+            // bgColor, not fgColor as with normal cell fills — set both so the
+            // color actually shows up regardless of which one Excel reads.
+            style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6EFCE' }, bgColor: { argb: 'FFC6EFCE' } } }, // light green
+          },
+          {
+            type: 'cellIs', operator: 'equal', priority: 2,
+            formulae: ['"Issue"'],
+            style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFE0B2' }, bgColor: { argb: 'FFFFE0B2' } } }, // light orange
+          },
+          {
+            type: 'cellIs', operator: 'equal', priority: 3,
+            formulae: ['"To be checked"'],
+            style: { fill: { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFC7CE' }, bgColor: { argb: 'FFFFC7CE' } } }, // light red
+          },
+        ],
+      });
     }
 
     // Green tab: this language has no comments in the latest round
@@ -2329,7 +2527,7 @@ async function buildWorkbook(threads, roundsMeta) {
     }
     function emit(s) { buffer += s; if (buffer.length >= CHUNK * 4) flush(); }
 
-    emit('{"version":9,"roundsMeta":');
+    emit('{"version":10,"roundsMeta":');
     emit(JSON.stringify(roundsMeta));
     emit(',"threads":[');
     for (let i = 0; i < threads.length; i++) {
@@ -2360,6 +2558,12 @@ async function buildWorkbook(threads, roundsMeta) {
         })),
         screenshot_aspect: t.screenshot_aspect || null,
         has_screenshot: !!t.screenshot,
+        // Redundant backup of the reviewer's Status mark. The sheet-based
+        // RowKey lookup in readPriorWorkbook() is the primary source (it
+        // reflects whatever the reviewer most recently typed into Excel),
+        // but keeping a copy here means the mark survives even if someone
+        // deletes/renames a language tab.
+        status: t.status || null,
       };
       emit(JSON.stringify(tMeta));
     }
