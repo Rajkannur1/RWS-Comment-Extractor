@@ -1235,6 +1235,18 @@ async function processZip(file, { embedScreenshots }) {
         return parts.length > 1 ? parts[1] : null;
       }).filter(Boolean));
       if (seconds.size === 0) break;
+      // A "second" segment only means anything if there's genuinely a
+      // folder layer below `wrap` — i.e. some path goes at least 3 levels
+      // deep (wrap/subfolder/file). If every path is just wrap/file.pdf,
+      // the many distinct "seconds" we just collected are actually PDF
+      // filenames, not subfolders — meaning `wrap` itself IS the language
+      // folder (just with no scale subfolder underneath), and we must
+      // NOT strip it. This is exactly what happens with a flat
+      // "LanguageName/*.pdf" zip: many differently-named PDFs directly
+      // under one folder look, at a glance, like "multiple folders"
+      // unless we check for actual depth.
+      const hasDeeperNesting = currentPaths.some(p => p.split('/').length > 2);
+      if (!hasDeeperNesting) break;
       // Either multiple folders at the next level, or a single folder
       // that looks like a language — in both cases `wrap` is a wrapper
       // and the language layer is below.
