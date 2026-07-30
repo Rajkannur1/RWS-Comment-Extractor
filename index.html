@@ -772,6 +772,165 @@ function languageDisplay(code, fallbackFolder) {
   return code;
 }
 
+// ============================================================
+// Language folder resolution
+// ============================================================
+// Zips arrive in wildly different shapes depending on who assembled them:
+//
+//   lang/scale/file.pdf              lang/file.pdf
+//   wrapper/lang/scale/file.pdf      wrapper/wrapper2/lang/file.pdf
+//   file.pdf              (no folders at all — downloaded straight from mail)
+//   RandomFolderName/file.pdf        (single language, folder isn't named for it)
+//
+// Earlier versions tried to guess which path level was the "language" by
+// counting folders at each depth. That's inherently fragile — a flat
+// language folder full of PDFs is indistinguishable, by counting alone,
+// from a wrapper containing many language folders. So instead of guessing
+// by POSITION, we identify the language SEMANTICALLY (does this segment
+// actually look like a language?) and only fall back to structure when
+// nothing looks like one. Scale is derived from the filename, never the
+// folder, so the language is the only thing folders need to tell us.
+
+// Language names that show up as the leading word of a folder name, e.g.
+// "Hindi-India", "Spanish - US", "Portuguese - BR", "Simplified Chinese - CH".
+const LANGUAGE_NAME_WORDS = new Set([
+  'arabic', 'bengali', 'bulgarian', 'catalan', 'chinese', 'croatian', 'czech',
+  'danish', 'dutch', 'english', 'estonian', 'filipino', 'finnish', 'flemish',
+  'french', 'german', 'greek', 'gujarati', 'hebrew', 'hindi', 'hungarian',
+  'icelandic', 'indonesian', 'italian', 'japanese', 'kannada', 'korean',
+  'latvian', 'lithuanian', 'malay', 'malayalam', 'marathi', 'norwegian',
+  'polish', 'portuguese', 'punjabi', 'romanian', 'russian', 'serbian',
+  'simplified', 'sinhala', 'slovak', 'slovene', 'slovenian', 'spanish',
+  'swedish', 'tagalog', 'tamil', 'telugu', 'thai', 'traditional', 'turkish',
+  'ukrainian', 'urdu', 'vietnamese',
+]);
+
+// Stable label for files we can't attribute to any language. Deliberately a
+// CONSTANT rather than something derived from the zip name: language_folder
+// is part of the cross-round thread matching key, and zip names change every
+// round ("OneDrive_1_30-7", "OneDrive_2_31-7"), which would break matching.
+const UNKNOWN_LANG_LABEL = '(language not detected)';
+
+// How strongly a folder segment reads as a language. Higher wins.
+//   3 = explicit map entry or strict ISO locale (hi-IN, cs-CZ)
+//   2 = leading word is a known language name (Hindi-India, Spanish - US)
+//   0 = doesn't look like a language at all
+function languageFolderScore(name) {
+  const cleaned = String(name).replace(/\s+/g, ' ').trim();
+  if (!cleaned) return 0;
+  if (LANG_MAP[cleaned] !== undefined) return 3;
+  if (/^[a-z]{2,3}-[A-Z]{2,3}$/.test(cleaned)) return 3;
+  const firstWord = cleaned.split(/[\s\-_]+/)[0].toLowerCase();
+  if (LANGUAGE_NAME_WORDS.has(firstWord)) return 2;
+  return 0;
+}
+
+// Pick the best language-looking folder from a path's folder segments.
+// Scanning every segment (rather than assuming a fixed depth) means any
+// number of wrapper layers, above or below, is handled automatically.
+// Ties go to the shallowest segment, since language folders sit above
+// scale folders in every layout we've seen.
+function bestLanguageSegment(folderSegs) {
+  let best = null, bestScore = 0;
+  for (const seg of folderSegs) {
+    const score = languageFolderScore(seg);
+    if (score > bestScore) { bestScore = score; best = seg; }
+  }
+  return best;
+}
+
+// Last resort before giving up on a file: some filenames carry the locale
+// themselves, e.g. "diabetes_CM3001-A_hi_IN_202604210936.pdf" or
+// "FAS1001A-screenshot-esUS.pdf". Recovering it here rescues zips that have
+// no folder structure whatsoever.
+function languageFromFilename(fileName) {
+  const base = String(fileName).replace(/\.pdf$/i, '');
+  // _hi_IN_ / -hi-IN- / .hi_IN. — separated locale
+  let m = base.match(/[._\-]([a-z]{2,3})[._\-]([A-Z]{2,3})(?=[._\-]|$)/);
+  if (m) return `${m[1]}-${m[2]}`;
+  // -esUS / _koKR — squashed locale
+  m = base.match(/[._\-]([a-z]{2})([A-Z]{2})(?=[._\-]|$)/);
+  if (m) return `${m[1]}-${m[2]}`;
+  return null;
+}
+
+// Number of leading folder segments common to every path. Used by the
+// structural fallback to shed wrapper folders deterministically — no
+// heuristics, just "what do all files share".
+function commonFolderPrefixLength(folderSegLists) {
+  if (!folderSegLists.length) return 0;
+  const first = folderSegLists[0];
+  let n = 0;
+  for (let i = 0; i < first.length; i++) {
+    if (folderSegLists.every(segs => segs.length > i && segs[i] === first[i])) n++;
+    else break;
+  }
+  return n;
+}
+
+// Assign every PDF path a language-folder group. Returns a Map of
+// path -> group label, plus a note describing how groups were derived
+// (for the activity log).
+//
+// IMPORTANT: every input path gets a group. Nothing is ever silently
+// dropped — a file we can't attribute lands in UNKNOWN_LANG_LABEL so it
+// still reaches the workbook and the user can see and correct it.
+function assignLanguageGroups(paths, opts = {}) {
+  const split = paths.map(p => {
+    const segs = p.split('/');
+    return { path: p, folders: segs.slice(0, -1), fileName: segs[segs.length - 1] };
+  });
+
+  // Zip-name hint, used only as a last resort in place of the "unknown"
+  // bucket, and only when the zip name genuinely reads as a language (e.g.
+  // "Hindi-India.zip", "Czech - CZ.zip"). Names like "OneDrive_1_30-7-2026"
+  // score 0 and are ignored — which matters, because a date-stamped zip name
+  // changes every round and would break cross-round thread matching if used
+  // as a language identity.
+  const zipHint = (() => {
+    const raw = String(opts.zipName || '').replace(/\.zip$/i, '').trim();
+    return raw && languageFolderScore(raw) >= 2 ? raw : null;
+  })();
+
+  // Structural fallback setup: strip folder levels shared by all files, but
+  // never strip so deep that no folder is left to group by. That single
+  // guard is what makes both "Hindi-India/*.pdf" (nothing to strip — the
+  // one folder IS the language) and "Wrapper/Hindi-India/*.pdf" (strip the
+  // wrapper) come out right, with no special-casing of either.
+  const maxDepth = Math.max(0, ...split.map(s => s.folders.length));
+  const commonLen = commonFolderPrefixLength(split.map(s => s.folders));
+  const stripLen = Math.min(commonLen, Math.max(0, maxDepth - 1));
+
+  const groups = new Map();
+  const how = { semantic: 0, filename: 0, zipName: 0, structural: 0, unknown: 0 };
+  for (const s of split) {
+    let label = bestLanguageSegment(s.folders);
+    if (label) {
+      how.semantic++;
+    } else {
+      const fromName = languageFromFilename(s.fileName);
+      if (fromName) {
+        label = fromName;
+        how.filename++;
+      } else {
+        const remaining = s.folders.slice(stripLen);
+        if (remaining.length) {
+          label = remaining[0];
+          how.structural++;
+        } else if (zipHint) {
+          label = zipHint;
+          how.zipName++;
+        } else {
+          label = UNKNOWN_LANG_LABEL;
+          how.unknown++;
+        }
+      }
+    }
+    groups.set(s.path, label);
+  }
+  return { groups, how, stripLen };
+}
+
 const SCALE_PATTERNS = [
   // NOTE: qb-PRO prefix on screens-side filenames is treated as a decoration
   // by detectScale (stripped before pattern matching), not captured as part
@@ -1051,6 +1210,27 @@ async function runPipeline() {
     embedScreenshots: optScreens.checked,
   });
 
+  // Fail loudly rather than handing back an empty workbook. A silent
+  // "0 threads / 0 comments" result is the single most confusing outcome
+  // for users, because it looks like the tool worked. Distinguish the two
+  // very different causes so the message is actionable.
+  const langCount = Object.keys(newCommentsByLang).length;
+  const commentCount = Object.values(newCommentsByLang)
+    .reduce((s, arr) => s + arr.length, 0);
+  if (langCount === 0) {
+    throw new Error(
+      'No PDFs in this zip could be read. Check that the zip contains the ' +
+      'RWS comment PDFs (not a nested zip, and not only Obsolete/Archive folders).'
+    );
+  }
+  if (commentCount === 0) {
+    throw new Error(
+      `Read ${langCount} folder(s) of PDFs, but found no comments/annotations in ` +
+      `any of them. This usually means the PDFs are flattened copies with the ` +
+      `annotation layer removed — ask RWS to resend the commented PDFs.`
+    );
+  }
+
   progressTitle.innerHTML = '<span class="spinner"></span>Matching to prior rounds…';
   setProgress(1, 1, 'Building threads…');
 
@@ -1202,72 +1382,21 @@ async function processZip(file, { embedScreenshots }) {
   pdfFiles = pdfFiles.filter(f => !isObsoletePath(f.name));
   const afterObsolete = pdfFiles.length;
 
-  // Detect optional top-level wrapper folder(s) BEFORE dedup.
-  //
-  // Some zips wrap everything in an outer "Round 1" / "RWS Comments_R1" /
-  // "OneDrive_2_30-6-2026" folder. Without spotting these, dedup would
-  // group across language folders that all share the same top segment,
-  // silently dropping every-language-but-one of any file that shares a
-  // basename across languages (which is the norm in multilingual review
-  // batches). This loop handles multi-level wrappers too: when a user
-  // re-zips an already-extracted folder, two layers of wrapping can show
-  // up (zip-name-folder containing the original wrapper folder).
-  //
-  // We strip wrapper folders iteratively, stopping when EITHER:
-  //   • we hit a level with multiple folders (the language layer), OR
-  //   • the single folder at that level looks like a language itself
-  //     (e.g. "cs-CZ", "Spanish - US"), in which case the parent was
-  //     the wrapper and we shouldn't go deeper.
-  const looksLikeLanguageFolder = (name) =>
-    LANG_MAP[name] !== undefined ||
-    /^[a-z]{2,3}-[A-Z]{2,3}$/.test(name);
-  let stripPrefix = '';
-  {
-    let currentPaths = pdfFiles.map(f => f.name);
-    const MAX_ITER = 6;  // safety guard; real-world wrappers never go this deep
-    for (let i = 0; i < MAX_ITER; i++) {
-      const firsts = new Set(currentPaths.map(p => p.split('/')[0]));
-      if (firsts.size !== 1) break;
-      const wrap = [...firsts][0];
-      if (looksLikeLanguageFolder(wrap)) break;  // first level IS the language
-      const seconds = new Set(currentPaths.map(p => {
-        const parts = p.split('/');
-        return parts.length > 1 ? parts[1] : null;
-      }).filter(Boolean));
-      if (seconds.size === 0) break;
-      // A "second" segment only means anything if there's genuinely a
-      // folder layer below `wrap` — i.e. some path goes at least 3 levels
-      // deep (wrap/subfolder/file). If every path is just wrap/file.pdf,
-      // the many distinct "seconds" we just collected are actually PDF
-      // filenames, not subfolders — meaning `wrap` itself IS the language
-      // folder (just with no scale subfolder underneath), and we must
-      // NOT strip it. This is exactly what happens with a flat
-      // "LanguageName/*.pdf" zip: many differently-named PDFs directly
-      // under one folder look, at a glance, like "multiple folders"
-      // unless we check for actual depth.
-      const hasDeeperNesting = currentPaths.some(p => p.split('/').length > 2);
-      if (!hasDeeperNesting) break;
-      // Either multiple folders at the next level, or a single folder
-      // that looks like a language — in both cases `wrap` is a wrapper
-      // and the language layer is below.
-      stripPrefix += wrap + '/';
-      if (seconds.size > 1) break;
-      const onlySecond = [...seconds][0];
-      if (looksLikeLanguageFolder(onlySecond)) break;
-      // Otherwise: another wrapper layer — peel it and continue.
-      currentPaths = currentPaths.map(p => p.slice(wrap.length + 1));
-    }
-  }
-  if (stripPrefix) {
-    log(`Detected wrapper folder${stripPrefix.split('/').filter(Boolean).length > 1 ? 's' : ''}: "${stripPrefix.replace(/\/$/, '')}" — stripped before grouping.`, 'info');
-  }
+  // Work out which language each PDF belongs to. See assignLanguageGroups
+  // above for the strategy — semantic detection first, then filename locale,
+  // then deterministic common-prefix structure, and finally an explicit
+  // "not detected" bucket so no file is ever silently dropped.
+  const { groups: langByPath, how, stripLen } =
+    assignLanguageGroups(pdfFiles.map(f => f.name), { zipName: file.name });
 
-  // Path the dedup uses to build keys — wrapper stripped if present, so
-  // dedup groups by (language folder, basename) rather than (wrapper,
-  // basename).
-  const dedupPath = (e) => stripPrefix && e.name.startsWith(stripPrefix)
-    ? e.name.slice(stripPrefix.length)
-    : e.name;
+  // Dedup key: the path with shared wrapper levels removed, so two copies of
+  // the same file under one wrapper collapse, while same-named files in
+  // different language folders stay distinct.
+  const dedupPath = (e) => {
+    const segs = e.name.split('/');
+    const folders = segs.slice(0, -1).slice(stripLen);
+    return [langByPath.get(e.name), ...folders, segs[segs.length - 1]].join('/');
+  };
   pdfFiles = dedupeByLatest(pdfFiles, (e, wantDate) => wantDate ? e.date : dedupPath(e));
   const afterDedupe = pdfFiles.length;
 
@@ -1277,15 +1406,25 @@ async function processZip(file, { embedScreenshots }) {
   if (afterObsolete !== afterDedupe) {
     log(`Deduped ${afterObsolete - afterDedupe} same-name PDF(s) (kept latest version).`, 'info');
   }
+  if (how.filename) {
+    log(`${how.filename} PDF(s) had no language folder — locale read from the filename instead.`, 'info');
+  }
+  if (how.zipName) {
+    log(`${how.zipName} PDF(s) had no folder — language taken from the zip filename.`, 'info');
+  }
+  if (how.structural) {
+    log(`${how.structural} PDF(s) grouped by folder name (not a recognised language name).`, 'info');
+  }
+  if (how.unknown) {
+    log(`${how.unknown} PDF(s) have no folder or locale to identify a language — grouped under "${UNKNOWN_LANG_LABEL}". Rename the tab in Excel, or put the files in a language-named folder to fix this.`, 'warn');
+  }
   log(`Processing ${pdfFiles.length} PDF file(s) from zip.`, 'info');
 
   const byLang = {};
   for (const f of pdfFiles) {
-    const p = stripPrefix ? f.name.slice(stripPrefix.length) : f.name;
-    const segs = p.split('/');
-    if (segs.length < 2) continue;
-    const langFolder = segs[0];
+    const segs = f.name.split('/');
     const fileName = segs[segs.length - 1];
+    const langFolder = langByPath.get(f.name) || UNKNOWN_LANG_LABEL;
     (byLang[langFolder] ||= []).push({ entry: f, fileName });
   }
 
